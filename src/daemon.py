@@ -7,6 +7,7 @@ from typing import Optional
 from src.capture import AudioCapture
 from src.config import Config
 from src.process_monitor import ProcessMonitor
+from src.recorder_core import recover_orphaned_raw_files
 
 log = logging.getLogger("rb-recorder")
 
@@ -22,6 +23,13 @@ class RecorderDaemon:
         )
         self._monitor.on_start = self._on_rekordbox_start
         self._monitor.on_stop = self._on_rekordbox_stop
+        
+        # Recover any orphaned files from previous interrupted runs
+        recover_orphaned_raw_files(
+            output_dir=self.config.output_dir,
+            sample_rate=self.config.sample_rate,
+            export_format=self.config.export_format
+        )
 
     def _on_rekordbox_start(self, pid: int):
         log.info(f"Rekordbox detected (PID {pid}). Starting recording.")

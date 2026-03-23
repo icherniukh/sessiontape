@@ -238,3 +238,41 @@ class PCMStreamRecorder:
             return 0.0
         sum_squares = sum(sample * sample for sample in audio_samples)
         return math.sqrt(sum_squares / len(audio_samples))
+
+import glob
+
+def recover_orphaned_raw_files(output_dir: str, sample_rate: int, export_format: str) -> None:
+    if not os.path.exists(output_dir):
+        return
+
+    # Match both hidden (.rb_session...) and visible just in case
+    patterns = [os.path.join(output_dir, ".rb_session_*.raw"), os.path.join(output_dir, "*.raw")]
+    raw_files = set()
+    for p in patterns:
+        raw_files.update(glob.glob(p))
+    
+    if not raw_files:
+        return
+
+    log.info(f"Found {len(raw_files)} orphaned raw files. Starting recovery...")
+    exporter = Exporter(
+        sample_rate=sample_rate,
+        channels=2,
+        bytes_per_sample=2,
+        export_format=export_format,
+    )
+    
+    for raw_path in raw_files:
+        size = os.path.getsize(raw_path)
+        if size == 0:
+            log.info(f"Deleting empty orphaned file: {raw_path}")
+            os.unlink(raw_path)
+            continue
+            
+        base = os.path.splitext(os.path.basename(raw_path))[0]
+        if base.startswith('.'):
+            base = base[1:]
+            
+        output_path = os.path.join(output_dir, f"{base}.{export_format}")
+        log.info(f"Recovering {raw_path} to {output_path}")
+        exporter.export_async(raw_path, output_path)
