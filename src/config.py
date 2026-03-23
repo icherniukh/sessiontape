@@ -1,13 +1,56 @@
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
+from pathlib import Path, PureWindowsPath
+
+
+APP_DIR = "rb-recorder"
+APP_OUTPUT_DIR = "auto-rb-recorder"
+
+
+def default_output_dir() -> str:
+    return str(Path.home() / "Music" / APP_OUTPUT_DIR)
+
+
+def legacy_config_path() -> str:
+    return str(Path.home() / ".config" / APP_DIR / "config.toml")
+
+
+def platform_config_path() -> str:
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return str(PureWindowsPath(appdata) / APP_DIR / "config.toml")
+        user_home = os.environ.get("USERPROFILE", str(Path.home()))
+        return str(
+            PureWindowsPath(user_home) / "AppData" / "Roaming" / APP_DIR / "config.toml"
+        )
+
+    if sys.platform == "darwin":
+        return str(
+            Path.home() / "Library" / "Application Support" / APP_DIR / "config.toml"
+        )
+
+    return legacy_config_path()
+
+
+def resolve_config_path(explicit_path: str | None = None) -> str:
+    if explicit_path:
+        return explicit_path
+
+    legacy_path = legacy_config_path()
+    if os.path.exists(legacy_path):
+        return legacy_path
+
+    return platform_config_path()
 
 
 @dataclass
 class Config:
     sample_rate: int = 48000
     output_dir: str = field(
-        default_factory=lambda: os.path.expanduser("~/Music/auto-rb-recorder")
+        default_factory=default_output_dir
     )
     silence_threshold_db: float = -50
     min_silence_duration: float = 15

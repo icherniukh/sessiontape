@@ -1,7 +1,15 @@
 import unittest
 import tempfile
 import os
-from src.config import Config
+from unittest.mock import patch
+
+from src.config import (
+    Config,
+    default_output_dir,
+    legacy_config_path,
+    platform_config_path,
+    resolve_config_path,
+)
 
 
 class TestConfig(unittest.TestCase):
@@ -14,6 +22,23 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.poll_interval, 2.0)
         self.assertEqual(cfg.process_name, "rekordbox")
         self.assertTrue(cfg.output_dir.endswith("auto-rb-recorder"))
+        self.assertEqual(cfg.output_dir, default_output_dir())
+
+    def test_platform_config_path_windows(self):
+        with patch("src.config.os.name", "nt"):
+            with patch.dict("src.config.os.environ", {"APPDATA": r"C:\Users\ivan\AppData\Roaming"}, clear=False):
+                self.assertEqual(
+                    platform_config_path(),
+                    r"C:\Users\ivan\AppData\Roaming\rb-recorder\config.toml",
+                )
+
+    def test_resolve_config_path_prefers_legacy_when_present(self):
+        legacy_path = legacy_config_path()
+        with patch("src.config.os.path.exists", side_effect=lambda path: path == legacy_path):
+            self.assertEqual(resolve_config_path(), legacy_path)
+
+    def test_resolve_config_path_uses_explicit_override(self):
+        self.assertEqual(resolve_config_path("/tmp/custom.toml"), "/tmp/custom.toml")
 
     def test_load_from_toml(self):
         toml_content = (

@@ -38,7 +38,10 @@ To approve it:
 
 ## Configuration
 
-You can customize the silence detection thresholds and the output directory by editing `~/.config/rb-recorder/config.toml`:
+You can customize the silence detection thresholds and the output directory by editing the config file:
+
+- macOS existing installs: `~/.config/rb-recorder/config.toml`
+- Windows target path: `%APPDATA%/rb-recorder/config.toml`
 
 ```toml
 [recording]

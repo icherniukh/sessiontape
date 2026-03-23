@@ -2,7 +2,7 @@ import argparse
 import logging
 import os
 
-from src.config import Config
+from src.config import Config, resolve_config_path
 from src.daemon import RecorderDaemon
 
 
@@ -10,7 +10,6 @@ def main():
     parser = argparse.ArgumentParser(description="Rekordbox Auto-Recorder")
     parser.add_argument(
         "-c", "--config",
-        default=os.path.expanduser("~/.config/rb-recorder/config.toml"),
         help="Path to config file",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
@@ -22,8 +21,10 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    if os.path.exists(args.config):
-        config = Config.from_file(args.config)
+    config_path = resolve_config_path(args.config)
+
+    if os.path.exists(config_path):
+        config = Config.from_file(config_path)
     else:
         config = Config()
 
