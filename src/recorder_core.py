@@ -18,7 +18,17 @@ def db_to_rms(db: float) -> float:
     return 32768.0 * (10.0 ** (db / 20.0))
 
 
+import sys
+
 def _find_executable(name: str) -> str:
+    if hasattr(sys, "_MEIPASS"):
+        bundle_path = os.path.join(sys._MEIPASS, name)
+        if os.path.exists(bundle_path):
+            return bundle_path
+        bundle_exe_path = os.path.join(sys._MEIPASS, name + ".exe")
+        if os.path.exists(bundle_exe_path):
+            return bundle_exe_path
+
     path = shutil.which(name)
     if path:
         return path
