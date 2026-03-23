@@ -3,7 +3,22 @@ import unittest
 from unittest.mock import MagicMock, patch
 import os
 
-from src.capture import AudioCapture, db_to_rms
+from src.capture import AudioCapture
+from src.recorder_core import db_to_rms
+
+
+class StubBackend:
+    def __init__(self, proc):
+        self.proc = proc
+        self.started_with = None
+        self.stopped_proc = None
+
+    def start(self, pid: int, sample_rate: int):
+        self.started_with = (pid, sample_rate)
+        return self.proc
+
+    def stop(self, proc):
+        self.stopped_proc = proc
 
 
 class TestAudioCapture(unittest.TestCase):
@@ -38,6 +53,26 @@ class TestAudioCapture(unittest.TestCase):
         cap = AudioCapture(pid=12345, output_dir="/tmp", sample_rate=48000)
         cap.stop()
         self.assertFalse(cap.is_recording)
+
+    @patch("src.capture.threading.Thread")
+    @patch("src.capture.subprocess.Popen")
+    def test_start_can_use_injected_backend(self, mock_popen, mock_thread):
+        mock_proc = MagicMock()
+        backend = StubBackend(mock_proc)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cap = AudioCapture(
+                pid=12345,
+                output_dir=tmpdir,
+                sample_rate=44100,
+                backend=backend,
+            )
+            cap.start()
+
+            mock_popen.assert_not_called()
+            self.assertEqual(backend.started_with, (12345, 44100))
+            cap.stop()
+            self.assertIs(backend.stopped_proc, mock_proc)
 
     @patch("src.capture.threading.Thread")
     @patch("src.capture.subprocess.Popen")

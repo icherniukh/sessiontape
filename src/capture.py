@@ -3,13 +3,14 @@ import subprocess
 import threading
 from typing import Optional
 
-from src.recorder_core import PCMStreamRecorder, _find_executable, db_to_rms
+from src.backends.base import CaptureBackend
+from src.platform import get_platform_backend
+from src.recorder_core import PCMStreamRecorder
 
 log = logging.getLogger("rb-recorder")
 
-
 class AudioCapture:
-    """Captures PCM from audiotee and forwards it to the recorder core."""
+    """Captures PCM from a backend subprocess and forwards it to the recorder core."""
 
     def __init__(
         self,
@@ -21,12 +22,14 @@ class AudioCapture:
         min_silence_duration: float = 15.0,
         decay_tail: float = 5.0,
         export_format: str = "wav",
+        backend: CaptureBackend | None = None,
     ):
         self.pid = pid
         self.output_dir = output_dir
         self.sample_rate = sample_rate
         self.source_name = source_name
         self.is_recording = False
+        self.backend = backend or get_platform_backend()
 
         self.recorder = PCMStreamRecorder(
             output_dir=output_dir,
@@ -57,20 +60,7 @@ class AudioCapture:
 
         self.is_recording = True
         self.recorder.reset()
-
-        self._proc = subprocess.Popen(
-            [
-                _find_executable("audiotee"),
-                "--include-processes",
-                str(self.pid),
-                "--sample-rate",
-                str(self.sample_rate),
-                "--stereo",
-                "--flush",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+        self._proc = self.backend.start(self.pid, self.sample_rate)
 
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
@@ -80,9 +70,7 @@ class AudioCapture:
             return
 
         if self._proc:
-            if self._proc.poll() is None:
-                self._proc.terminate()
-            self._proc.wait(timeout=10)
+            self.backend.stop(self._proc)
             self._proc = None
 
         self.is_recording = False

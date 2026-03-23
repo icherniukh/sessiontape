@@ -30,7 +30,7 @@ def wav_frame_count(path: Path) -> int:
 class TestAudioCaptureIntegration(unittest.TestCase):
     def test_real_subprocess_stream_splits_into_multiple_wavs(self):
         with TemporaryDirectory() as tmpdir:
-            with patch("src.capture._find_executable", return_value=FAKE_AUDIOTEE):
+            with patch("src.backends.macos_capture._find_executable", return_value=FAKE_AUDIOTEE):
                 with patch.dict(
                     os.environ,
                     {"RB_TEST_AUDIO_SCENARIO": "sound:3,silence:3,sound:2"},
@@ -58,7 +58,7 @@ class TestAudioCaptureIntegration(unittest.TestCase):
 
     def test_real_subprocess_stream_preserves_decay_tail(self):
         with TemporaryDirectory() as tmpdir:
-            with patch("src.capture._find_executable", return_value=FAKE_AUDIOTEE):
+            with patch("src.backends.macos_capture._find_executable", return_value=FAKE_AUDIOTEE):
                 with patch.dict(
                     os.environ,
                     {"RB_TEST_AUDIO_SCENARIO": "silence:2,sound:1"},
