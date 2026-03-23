@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "auto-rb-recorder"
 dynamic = ["version"]
 requires-python = ">=3.11"
+dependencies = ["psutil>=7,<8"]
 
 [project.scripts]
 auto-rb-recorder = "src.__main__:main"

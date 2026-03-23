@@ -4,6 +4,14 @@ from src.process_monitor import ProcessMonitor
 
 
 class TestProcessMonitor(unittest.TestCase):
+    @patch("src.process_monitor.psutil.process_iter")
+    def test_find_pid_matches_stem(self, mock_process_iter):
+        mock_process_iter.return_value = [
+            type("Proc", (), {"info": {"pid": 42, "name": "rekordbox.exe"}})()
+        ]
+        mon = ProcessMonitor("rekordbox")
+        self.assertEqual(mon._find_pid(), 42)
+
     @patch("src.process_monitor.time.sleep")
     @patch("src.process_monitor.ProcessMonitor._find_pid")
     def test_detects_process_start(self, mock_find, mock_sleep):

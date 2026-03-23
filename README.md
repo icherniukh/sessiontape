@@ -51,6 +51,28 @@ silence_threshold_db = -50
 min_silence_duration = 15
 ```
 
+## Current Architecture
+
+- `src/capture.py` is the macOS capture wrapper around `audiotee`.
+- `src/recorder_core.py` handles PCM chunk processing, silence-based splitting, raw session writing, and export.
+- `src/process_monitor.py` handles Rekordbox process detection and debounce logic.
+
+`wav` export is written directly from PCM data. `mp3` export still uses `ffmpeg`.
+
+## Testing
+
+Run the test suite with:
+
+```bash
+python -m pytest
+```
+
+The suite includes a subprocess-driven integration harness that feeds deterministic PCM through a fake `audiotee` process and verifies real on-disk `wav` output.
+
+## Windows Support
+
+The Windows support plan is tracked in [docs/windows-support-design.md](docs/windows-support-design.md).
+
 ## Compiling from Source
 
 If you want to build the executable manually on your system:

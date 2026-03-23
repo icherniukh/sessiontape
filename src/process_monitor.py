@@ -1,6 +1,8 @@
-import subprocess
+import os
 import time
 from typing import Callable, Optional
+
+import psutil
 
 
 class ProcessMonitor:
@@ -15,15 +17,18 @@ class ProcessMonitor:
         self._current_pid: Optional[int] = None
 
     def _find_pid(self) -> Optional[int]:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-x", self.process_name],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                return int(result.stdout.strip().split("\n")[0])
-        except (ValueError, subprocess.SubprocessError):
-            pass
+        target = self.process_name.lower()
+        target_stem = os.path.splitext(target)[0]
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                name = proc.info.get("name")
+                if not name:
+                    continue
+                normalized = name.lower()
+                if normalized == target or os.path.splitext(normalized)[0] == target_stem:
+                    return proc.info["pid"]
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
         return None
 
     def poll_once(self):
