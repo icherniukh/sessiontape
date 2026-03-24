@@ -149,6 +149,7 @@ class PCMStreamRecorder:
         self.state = "PASSIVE"
         self.ring_buffer = deque(maxlen=self.buffer_maxlen)
         self.silence_count = 0
+        self._chunk_count = 0
 
         self._raw_path: Optional[str] = None
         self._output_path: Optional[str] = None
@@ -158,10 +159,16 @@ class PCMStreamRecorder:
         self.state = "PASSIVE"
         self.ring_buffer.clear()
         self.silence_count = 0
+        self._chunk_count = 0
 
     def process_chunk(self, chunk: bytes) -> None:
         rms = self._calculate_rms(chunk)
         is_silent = rms < self.rms_threshold
+
+        self._chunk_count += 1
+        if self._chunk_count % 50 == 0:  # log every ~5s
+            db = 20 * math.log10(rms / 32768.0) if rms > 0 else -math.inf
+            log.debug(f"[{self.state}] chunk #{self._chunk_count} RMS={rms:.0f} ({db:.1f} dB), threshold={self.rms_threshold:.0f}")
 
         if self.state == "PASSIVE":
             self.ring_buffer.append(chunk)

@@ -1,3 +1,4 @@
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -38,12 +39,17 @@ class TestAudioCapture(unittest.TestCase):
 
             mock_popen.assert_called_once()
             args = mock_popen.call_args[0][0]
-            self.assertEqual(os.path.basename(args[0]), "audiotee")
-            self.assertIn("--flush", args)
+            if sys.platform == "win32":
+                self.assertEqual(os.path.basename(args[0]), "rb-capture-win.exe")
+                self.assertIn("--pid", args)
+            else:
+                self.assertEqual(os.path.basename(args[0]), "audiotee")
+                self.assertIn("--flush", args)
             self.assertIn("12345", args)
 
-            mock_thread.assert_called_once()
-            mock_thread.return_value.start.assert_called_once()
+            # Two threads are started: stderr logger + PCM reader
+            self.assertEqual(mock_thread.call_count, 2)
+            self.assertEqual(mock_thread.return_value.start.call_count, 2)
 
             self.assertTrue(cap.is_recording)
             self.assertEqual(cap.recorder.state, "PASSIVE")

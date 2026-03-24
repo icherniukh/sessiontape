@@ -2,9 +2,9 @@
 
 
 a = Analysis(
-    ['src/__main__.py'],
+    ['src\\__main__.py'],
     pathex=[],
-    binaries=[],
+    binaries=[('windows-capture\\rb-capture-win.exe', '.')],
     datas=[],
     hiddenimports=['src.config', 'src.capture', 'src.daemon', 'src.process_monitor', 'src.recorder_core'],
     hookspath=[],
@@ -32,7 +32,7 @@ exe = EXE(
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch='universal2',
+    target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
 )
