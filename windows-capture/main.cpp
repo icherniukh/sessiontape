@@ -1,7 +1,31 @@
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
-#include <audioclientactivationparams.h>
+// audioclientactivationparams.h is only available in Windows SDK 10.0.20348+
+// Define the required types manually for older SDKs.
+#ifndef AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK
+typedef enum AUDIOCLIENT_ACTIVATION_TYPE {
+    AUDIOCLIENT_ACTIVATION_TYPE_DEFAULT             = 0,
+    AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK    = 1,
+} AUDIOCLIENT_ACTIVATION_TYPE;
+
+typedef enum PROCESS_LOOPBACK_MODE {
+    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE   = 0,
+    PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE   = 1,
+} PROCESS_LOOPBACK_MODE;
+
+typedef struct AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+    DWORD                TargetProcessId;
+    PROCESS_LOOPBACK_MODE ProcessLoopbackMode;
+} AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS;
+
+typedef struct AUDIOCLIENT_ACTIVATION_PARAMS {
+    AUDIOCLIENT_ACTIVATION_TYPE ActivationType;
+    union {
+        AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS ProcessLoopbackParams;
+    };
+} AUDIOCLIENT_ACTIVATION_PARAMS;
+#endif
 #include <wrl/implements.h>
 #include <iostream>
 #include <io.h>
@@ -16,8 +40,8 @@ using namespace Microsoft::WRL;
 #endif
 
 // COM Smart pointers and completion handler
-class CActivateAudioInterfaceCompletionHandler : 
-    public RuntimeClass<RuntimeClassFlags<ClassicCom>, IActivateAudioInterfaceCompletionHandler>
+class CActivateAudioInterfaceCompletionHandler :
+    public RuntimeClass<RuntimeClassFlags<ClassicCom>, IActivateAudioInterfaceCompletionHandler, FtmBase>
 {
 public:
     STDMETHOD(ActivateCompleted)(IActivateAudioInterfaceAsyncOperation* operation)
@@ -107,39 +131,33 @@ int main(int argc, char** argv) {
 
     ComPtr<IAudioClient> pAudioClient = handler->m_AudioClient;
 
-    WAVEFORMATEX* pMixFormat = nullptr;
-    hr = pAudioClient->GetMixFormat(&pMixFormat);
-    if (FAILED(hr)) {
-        std::cerr << "GetMixFormat failed\n";
-        return 1;
-    }
+    // Process loopback virtual devices don't support GetMixFormat.
+    // Build a float32 stereo format at the requested sample rate directly.
+    WAVEFORMATEXTENSIBLE wfex = {};
+    wfex.Format.wFormatTag      = WAVE_FORMAT_EXTENSIBLE;
+    wfex.Format.nChannels       = 2;
+    wfex.Format.nSamplesPerSec  = targetSampleRate;
+    wfex.Format.wBitsPerSample  = 32;
+    wfex.Format.nBlockAlign     = wfex.Format.nChannels * (wfex.Format.wBitsPerSample / 8);
+    wfex.Format.nAvgBytesPerSec = wfex.Format.nSamplesPerSec * wfex.Format.nBlockAlign;
+    wfex.Format.cbSize          = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+    wfex.Samples.wValidBitsPerSample = 32;
+    wfex.dwChannelMask          = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+    wfex.SubFormat              = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 
-    // We prefer the engine mix format, but we'll convert float -> int16 ourselves if needed
-    bool isFloat = false;
-    WAVEFORMATEXTENSIBLE* pExtensible = (WAVEFORMATEXTENSIBLE*)pMixFormat;
-    if (pMixFormat->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
-        (pMixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE && pExtensible->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)) {
-        isFloat = true;
-    }
+    bool isFloat = true;
 
-    if (pMixFormat->nSamplesPerSec != targetSampleRate) {
-        std::cerr << "Warning: Engine mix format is " << pMixFormat->nSamplesPerSec 
-                  << " Hz but we want " << targetSampleRate << " Hz. Resampling is not perfectly implemented.\n";
-    }
-
-    // Initialize with the engine's mix format, and use LOOPBACK flag
     hr = pAudioClient->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
         AUDCLNT_STREAMFLAGS_LOOPBACK,
         10000000, // 1 second buffer
         0,
-        pMixFormat,
+        &wfex.Format,
         nullptr
     );
 
     if (FAILED(hr)) {
         std::cerr << "Initialize failed: " << std::hex << hr << "\n";
-        CoTaskMemFree(pMixFormat);
         return 1;
     }
 
@@ -181,28 +199,21 @@ int main(int argc, char** argv) {
 
             if (FAILED(hr)) break;
 
+            DWORD nChannels = wfex.Format.nChannels;
             if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
-                // Buffer is silent; output zeros
-                std::vector<short> silence(numFramesAvailable * pMixFormat->nChannels, 0);
+                std::vector<short> silence(numFramesAvailable * nChannels, 0);
                 fwrite(silence.data(), sizeof(short), silence.size(), stdout);
             } else {
-                if (isFloat) {
-                    // Convert float to int16
-                    float* pFloatData = (float*)pData;
-                    std::vector<short> pcmData(numFramesAvailable * pMixFormat->nChannels);
-                    for (UINT32 i = 0; i < numFramesAvailable * pMixFormat->nChannels; ++i) {
-                        float sample = pFloatData[i];
-                        if (sample > 1.0f) sample = 1.0f;
-                        if (sample < -1.0f) sample = -1.0f;
-                        pcmData[i] = (short)(sample * 32767.0f);
-                    }
-                    fwrite(pcmData.data(), sizeof(short), pcmData.size(), stdout);
-                } else if (pMixFormat->wBitsPerSample == 16) {
-                    fwrite(pData, pMixFormat->nBlockAlign, numFramesAvailable, stdout);
-                } else {
-                    // Unsupported bit depth, but just write raw as a fallback
-                    fwrite(pData, pMixFormat->nBlockAlign, numFramesAvailable, stdout);
+                // Format is always float32 (we set it above)
+                float* pFloatData = (float*)pData;
+                std::vector<short> pcmData(numFramesAvailable * nChannels);
+                for (UINT32 i = 0; i < numFramesAvailable * nChannels; ++i) {
+                    float sample = pFloatData[i];
+                    if (sample > 1.0f) sample = 1.0f;
+                    if (sample < -1.0f) sample = -1.0f;
+                    pcmData[i] = (short)(sample * 32767.0f);
                 }
+                fwrite(pcmData.data(), sizeof(short), pcmData.size(), stdout);
             }
 
             fflush(stdout);
@@ -216,7 +227,6 @@ int main(int argc, char** argv) {
     }
 
     pAudioClient->Stop();
-    CoTaskMemFree(pMixFormat);
     CoUninitialize();
 
     return 0;

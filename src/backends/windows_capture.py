@@ -1,22 +1,22 @@
+import logging
 import subprocess
 import os
 
 from src.backends.base import CaptureBackend
 from src.recorder_core import _find_executable
 
+log = logging.getLogger("rb-recorder")
+
 
 class WindowsCaptureBackend(CaptureBackend):
     def start(self, pid: int, sample_rate: int) -> subprocess.Popen:
+        exe = _find_executable("rb-capture-win.exe")
+        cmd = [exe, "--pid", str(pid), "--sample-rate", str(sample_rate)]
+        log.info(f"Launching capture helper: {' '.join(cmd)}")
         return subprocess.Popen(
-            [
-                _find_executable("rb-capture-win.exe"),
-                "--pid",
-                str(pid),
-                "--sample-rate",
-                str(sample_rate),
-            ],
+            cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
 
     def stop(self, proc: subprocess.Popen) -> None:

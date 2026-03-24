@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import unittest
 import wave
@@ -11,6 +12,26 @@ from src.capture import AudioCapture
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 FAKE_AUDIOTEE = str(FIXTURE_DIR / "fake_audiotee.py")
+FAKE_WINDOWS_CAPTURE = str(FIXTURE_DIR / "fake_windows_capture.py")
+
+def _make_capture(tmpdir, **kwargs):
+    """Create an AudioCapture that invokes the platform-appropriate fake helper."""
+    if sys.platform == "win32":
+        from src.backends.windows_capture import WindowsCaptureBackend
+        import subprocess as _sp
+
+        class FakeWindowsBackend(WindowsCaptureBackend):
+            def start(self, pid: int, sample_rate: int) -> _sp.Popen:
+                return _sp.Popen(
+                    [sys.executable, FAKE_WINDOWS_CAPTURE, "--pid", str(pid), "--sample-rate", str(sample_rate)],
+                    stdout=_sp.PIPE,
+                    stderr=_sp.DEVNULL,
+                )
+
+        return AudioCapture(backend=FakeWindowsBackend(), **kwargs)
+    else:
+        with patch(_BACKEND_PATCH, side_effect=lambda _: FAKE_AUDIOTEE):
+            return AudioCapture(**kwargs)
 
 
 def wait_until(predicate, timeout: float = 5.0, interval: float = 0.01) -> None:
@@ -30,24 +51,19 @@ def wav_frame_count(path: Path) -> int:
 class TestAudioCaptureIntegration(unittest.TestCase):
     def test_real_subprocess_stream_splits_into_multiple_wavs(self):
         with TemporaryDirectory() as tmpdir:
-            with patch("src.backends.macos_capture._find_executable", return_value=FAKE_AUDIOTEE):
-                with patch.dict(
-                    os.environ,
-                    {"RB_TEST_AUDIO_SCENARIO": "sound:3,silence:3,sound:2"},
-                    clear=False,
-                ):
-                    cap = AudioCapture(
-                        pid=12345,
-                        output_dir=tmpdir,
-                        sample_rate=48000,
-                        min_silence_duration=0.2,
-                        decay_tail=0.0,
-                        export_format="wav",
-                    )
-                    cap.start()
-
-                    wait_until(lambda: cap._proc is not None and cap._proc.poll() is not None)
-                    cap.stop()
+            with patch.dict(os.environ, {"RB_TEST_AUDIO_SCENARIO": "sound:3,silence:3,sound:2"}, clear=False):
+                cap = _make_capture(
+                    tmpdir,
+                    pid=12345,
+                    output_dir=tmpdir,
+                    sample_rate=48000,
+                    min_silence_duration=0.2,
+                    decay_tail=0.0,
+                    export_format="wav",
+                )
+                cap.start()
+                wait_until(lambda: cap._proc is not None and cap._proc.poll() is not None)
+                cap.stop()
 
             wait_until(lambda: len(list(Path(tmpdir).glob("rb_session_*.wav"))) == 2)
             wav_paths = sorted(Path(tmpdir).glob("rb_session_*.wav"))
@@ -58,24 +74,19 @@ class TestAudioCaptureIntegration(unittest.TestCase):
 
     def test_real_subprocess_stream_preserves_decay_tail(self):
         with TemporaryDirectory() as tmpdir:
-            with patch("src.backends.macos_capture._find_executable", return_value=FAKE_AUDIOTEE):
-                with patch.dict(
-                    os.environ,
-                    {"RB_TEST_AUDIO_SCENARIO": "silence:2,sound:1"},
-                    clear=False,
-                ):
-                    cap = AudioCapture(
-                        pid=12345,
-                        output_dir=tmpdir,
-                        sample_rate=48000,
-                        min_silence_duration=0.2,
-                        decay_tail=0.2,
-                        export_format="wav",
-                    )
-                    cap.start()
-
-                    wait_until(lambda: cap._proc is not None and cap._proc.poll() is not None)
-                    cap.stop()
+            with patch.dict(os.environ, {"RB_TEST_AUDIO_SCENARIO": "silence:2,sound:1"}, clear=False):
+                cap = _make_capture(
+                    tmpdir,
+                    pid=12345,
+                    output_dir=tmpdir,
+                    sample_rate=48000,
+                    min_silence_duration=0.2,
+                    decay_tail=0.2,
+                    export_format="wav",
+                )
+                cap.start()
+                wait_until(lambda: cap._proc is not None and cap._proc.poll() is not None)
+                cap.stop()
 
             wait_until(lambda: len(list(Path(tmpdir).glob("rb_session_*.wav"))) == 1)
             wav_paths = list(Path(tmpdir).glob("rb_session_*.wav"))

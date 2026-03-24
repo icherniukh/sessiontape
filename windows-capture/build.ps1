@@ -32,7 +32,7 @@ if (-Not $cl) {
 }
 
 Write-Host "Compiling rb-capture-win.exe..."
-cl.exe /EHsc /O2 /W3 /MD /std:c++17 main.cpp /link ole32.lib oleaut32.lib /OUT:rb-capture-win.exe
+cl.exe /EHsc /O2 /W3 /MD /std:c++17 main.cpp /link ole32.lib oleaut32.lib mmdevapi.lib /OUT:rb-capture-win.exe
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Build successful."

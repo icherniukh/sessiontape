@@ -48,11 +48,18 @@ class AudioCapture:
         return self.recorder.chunk_size
 
     def _read_loop(self) -> None:
+        chunks_read = 0
+        log.debug(f"Read loop started (chunk_size={self.chunk_size})")
         while self.is_recording and self._proc and self._proc.stdout:
             chunk = self._proc.stdout.read(self.chunk_size)
             if not chunk:
                 break
+            chunks_read += 1
+            if chunks_read == 1:
+                log.debug("First PCM chunk received from capture helper")
             self.recorder.process_chunk(chunk)
+        exit_code = self._proc.poll() if self._proc else None
+        log.info(f"Read loop exited after {chunks_read} chunks (helper exit code: {exit_code})")
 
     def start(self) -> None:
         if self.is_recording:
@@ -61,9 +68,19 @@ class AudioCapture:
         self.is_recording = True
         self.recorder.reset()
         self._proc = self.backend.start(self.pid, self.sample_rate)
+        log.info(f"Capture helper started (PID={self._proc.pid})")
+
+        if self._proc.stderr:
+            threading.Thread(target=self._log_stderr, daemon=True).start()
 
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
+
+    def _log_stderr(self) -> None:
+        for line in self._proc.stderr:
+            decoded = line.decode(errors="replace").rstrip()
+            if decoded:
+                log.debug(f"[helper stderr] {decoded}")
 
     def stop(self) -> None:
         if not self.is_recording:
