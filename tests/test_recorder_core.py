@@ -59,7 +59,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
 
             recorder.finalize()
 
-            recorder.exporter.export_async.assert_called_once_with(raw_path, output_path)
+            recorder.exporter.export_async.assert_called_once_with(raw_path, output_path, on_complete=None)
             self.assertEqual(recorder.state, "PASSIVE")
 
 
