@@ -3,6 +3,7 @@ import os
 import queue
 import signal
 from typing import Optional
+from typing import Callable, Optional
 
 import psutil
 
@@ -48,6 +49,11 @@ class RecorderDaemon:
             event_sink=self._queue.put,
         )
 
+        # Callbacks set by DaemonBridge (called from background thread)
+        self.on_state_change: Optional[Callable[[str, dict], None]] = None
+        self.on_capture_active: Optional[Callable[[], None]] = None
+        self.on_segment_saved: Optional[Callable[[str, float], None]] = None
+
         self._monitor = ProcessMonitor(
             config.process_name,
             queue=self._queue,
@@ -79,7 +85,11 @@ class RecorderDaemon:
             export_format=self.config.export_format,
             export_manager=self._export_manager,
         )
+        self._capture.recorder.on_active = self.on_capture_active
+        self._capture.recorder.on_segment_saved = self.on_segment_saved
         self._capture.start()
+        if self.on_state_change:
+            self.on_state_change("monitoring", {"pid": pid})
 
     def _stop_capture(self, keep_pid: bool = False):
         if not self._capture:
@@ -89,6 +99,8 @@ class RecorderDaemon:
         self._capture = None
         if not keep_pid:
             self._current_pid = None
+        if self.on_state_change:
+            self.on_state_change("idle", {})
 
     def run(self):
         _cleanup_stale_processes()
