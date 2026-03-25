@@ -8,7 +8,7 @@ import wave
 from array import array
 from collections import deque
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 log = logging.getLogger("rb-recorder")
 
@@ -56,16 +56,18 @@ class Exporter:
         self.bytes_per_sample = bytes_per_sample
         self.export_format = export_format.lower()
 
-    def export_async(self, raw_path: str, output_path: str) -> None:
+    def export_async(self, raw_path: str, output_path: str, on_complete: Optional[Callable[[str, float], None]] = None) -> None:
         thread = threading.Thread(
             target=self._convert,
-            args=(raw_path, output_path),
-            daemon=True,
+            args=(raw_path, output_path, on_complete),
+            daemon=False,
         )
         thread.start()
 
-    def _convert(self, raw_path: str, output_path: str) -> None:
+    def _convert(self, raw_path: str, output_path: str, on_complete: Optional[Callable[[str, float], None]] = None) -> None:
         log.info(f"Converting {raw_path} to {output_path}")
+        raw_size = os.path.getsize(raw_path) if os.path.exists(raw_path) else 0
+        duration = raw_size / (self.sample_rate * self.channels * self.bytes_per_sample) if raw_size > 0 else 0.0
         try:
             if self.export_format == "mp3":
                 self._convert_mp3(raw_path, output_path)
@@ -77,6 +79,8 @@ class Exporter:
 
         os.unlink(raw_path)
         log.info(f"Finished conversion: {output_path}")
+        if on_complete:
+            on_complete(output_path, duration)
 
     def _convert_wav(self, raw_path: str, output_path: str) -> None:
         with open(raw_path, "rb") as raw_file, wave.open(output_path, "wb") as wav_file:
@@ -155,6 +159,10 @@ class PCMStreamRecorder:
         self._output_path: Optional[str] = None
         self._raw_file = None
 
+        # Optional callbacks set by DaemonBridge
+        self.on_active: Optional[Callable[[], None]] = None
+        self.on_segment_saved: Optional[Callable[[str, float], None]] = None
+
     def reset(self) -> None:
         self.state = "PASSIVE"
         self.ring_buffer.clear()
@@ -179,6 +187,8 @@ class PCMStreamRecorder:
                     f"RMS={rms:.1f} > {self.rms_threshold:.1f}"
                 )
                 self.state = "ACTIVE"
+                if self.on_active:
+                    self.on_active()
                 self._open_new_file()
                 for buffered_chunk in buffered_chunks:
                     self._raw_file.write(buffered_chunk)
@@ -232,7 +242,7 @@ class PCMStreamRecorder:
         log.info(f"Raw capture finished: {raw_size} bytes ({duration:.1f}s)")
 
         if raw_size > 0:
-            self.exporter.export_async(self._raw_path, self._output_path)
+            self.exporter.export_async(self._raw_path, self._output_path, on_complete=self.on_segment_saved)
         else:
             os.unlink(self._raw_path)
 

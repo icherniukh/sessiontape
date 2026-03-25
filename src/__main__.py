@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import sys
 
 from src.config import Config, resolve_config_path
 from src.daemon import RecorderDaemon
@@ -13,6 +14,7 @@ def main():
         help="Path to config file",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
+    parser.add_argument("--gui", action="store_true", help="Launch macOS menu bar UI (macOS only)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -28,8 +30,15 @@ def main():
     else:
         config = Config()
 
-    daemon = RecorderDaemon(config)
-    daemon.run()
+    if args.gui:
+        if sys.platform != "darwin":
+            print("Error: --gui is only supported on macOS", file=sys.stderr)
+            sys.exit(1)
+        from src.menu_bar import MenuBarApp
+        MenuBarApp(config).run()
+    else:
+        daemon = RecorderDaemon(config)
+        daemon.run()
 
 
 if __name__ == "__main__":

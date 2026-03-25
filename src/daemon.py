@@ -2,7 +2,7 @@ import logging
 import os
 import signal
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from src.capture import AudioCapture
 from src.config import Config
@@ -17,6 +17,11 @@ class RecorderDaemon:
         self.config = config
         self._capture: Optional[AudioCapture] = None
         self._running = False
+
+        # Callbacks set by DaemonBridge (called from background thread)
+        self.on_state_change: Optional[Callable[[str, dict], None]] = None
+        self.on_capture_active: Optional[Callable[[], None]] = None
+        self.on_segment_saved: Optional[Callable[[str, float], None]] = None
 
         self._monitor = ProcessMonitor(
             config.process_name, poll_interval=config.poll_interval
@@ -43,7 +48,11 @@ class RecorderDaemon:
             decay_tail=self.config.decay_tail,
             export_format=self.config.export_format,
         )
+        self._capture.recorder.on_active = self.on_capture_active
+        self._capture.recorder.on_segment_saved = self.on_segment_saved
         self._capture.start()
+        if self.on_state_change:
+            self.on_state_change("monitoring", {"pid": pid})
 
     def _on_rekordbox_stop(self):
         if not self._capture:
@@ -51,6 +60,8 @@ class RecorderDaemon:
         log.info("Rekordbox closed. Stopping recording.")
         self._capture.stop()
         self._capture = None
+        if self.on_state_change:
+            self.on_state_change("idle", {})
     def run(self):
         self._running = True
         signal.signal(signal.SIGTERM, self._handle_shutdown)

@@ -90,3 +90,22 @@ class Config:
             cfg.poll_interval = monitor["poll_interval"]
 
         return cfg
+
+    def to_toml_string(self) -> str:
+        output_dir = self.output_dir.replace("\\", "/")
+        return (
+            f'[recording]\n'
+            f'sample_rate = {self.sample_rate}\n'
+            f'output_dir = "{output_dir}"\n'
+            f'export_format = "{self.export_format}"\n'
+            f'\n'
+            f'[trigger]\n'
+            f'silence_threshold_db = {self.silence_threshold_db}\n'
+            f'min_silence_duration = {self.min_silence_duration}\n'
+            f'min_segment_duration = {self.min_segment_duration}\n'
+            f'decay_tail = {self.decay_tail}\n'
+            f'\n'
+            f'[monitor]\n'
+            f'process_name = "{self.process_name}"\n'
+            f'poll_interval = {self.poll_interval}\n'
+        )
