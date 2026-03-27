@@ -19,7 +19,7 @@ class AudioteeCaptureBackend(CaptureBackend):
                 "--flush",
             ],
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
 
     def stop(self, proc: subprocess.Popen) -> None:
