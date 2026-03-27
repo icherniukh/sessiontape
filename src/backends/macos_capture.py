@@ -1,9 +1,12 @@
+import logging
 import subprocess
 import os
 import sys
 
 from src.backends.base import CaptureBackend
 from src.recorder_core import _find_executable
+
+log = logging.getLogger("rb-recorder")
 
 
 class AudioteeCaptureBackend(CaptureBackend):
@@ -25,4 +28,9 @@ class AudioteeCaptureBackend(CaptureBackend):
     def stop(self, proc: subprocess.Popen) -> None:
         if proc.poll() is None:
             proc.terminate()
-        proc.wait(timeout=10)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            log.warning(f"audiotee (PID {proc.pid}) did not exit after SIGTERM — sending SIGKILL")
+            proc.kill()
+            proc.wait()
