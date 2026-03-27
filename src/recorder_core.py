@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 import wave
 from array import array
 from collections import deque
@@ -150,6 +151,7 @@ class PCMStreamRecorder:
         self.ring_buffer = deque(maxlen=self.buffer_maxlen)
         self.silence_count = 0
         self._chunk_count = 0
+        self.last_active_at: float = 0.0  # epoch time of last PASSIVE→ACTIVE transition
 
         self._raw_path: Optional[str] = None
         self._output_path: Optional[str] = None
@@ -160,6 +162,7 @@ class PCMStreamRecorder:
         self.ring_buffer.clear()
         self.silence_count = 0
         self._chunk_count = 0
+        self.last_active_at = 0.0
 
     def process_chunk(self, chunk: bytes) -> None:
         rms = self._calculate_rms(chunk)
@@ -179,6 +182,7 @@ class PCMStreamRecorder:
                     f"RMS={rms:.1f} > {self.rms_threshold:.1f}"
                 )
                 self.state = "ACTIVE"
+                self.last_active_at = time.time()
                 self._open_new_file()
                 for buffered_chunk in buffered_chunks:
                     self._raw_file.write(buffered_chunk)
