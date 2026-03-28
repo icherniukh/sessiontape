@@ -19,7 +19,6 @@ class AudioteeCaptureBackend(CaptureBackend):
                 "--sample-rate",
                 str(sample_rate),
                 "--stereo",
-                "--flush",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

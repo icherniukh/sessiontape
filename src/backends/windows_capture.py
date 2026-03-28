@@ -26,4 +26,4 @@ class WindowsCaptureBackend(CaptureBackend):
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait(timeout=5)
+            proc.wait()  # SIGKILL must succeed; no timeout

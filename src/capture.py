@@ -91,7 +91,7 @@ class AudioCapture:
                 audiotee_log.log(level, "%s", text)
             except (json.JSONDecodeError, AttributeError, KeyError):
                 decoded = line.decode(errors="replace") if isinstance(line, bytes) else line
-                audiotee_log.debug(f"[stderr] {decoded}")
+                audiotee_log.warning(f"[stderr] {decoded}")
 
     def start(self) -> None:
         if self.is_recording:
