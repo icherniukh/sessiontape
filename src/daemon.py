@@ -72,7 +72,10 @@ class RecorderDaemon:
             self._monitor.poll_once()
             time.sleep(self.config.poll_interval)
 
-    def _handle_shutdown(self, signum, frame):
-        log.info("Shutdown signal received.")
+    def shutdown(self) -> None:
         self._running = False
         self._on_rekordbox_stop()
+
+    def _handle_shutdown(self, signum, frame):
+        log.info("Shutdown signal received.")
+        self.shutdown()
