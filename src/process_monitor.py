@@ -21,7 +21,7 @@ class ProcessMonitor(threading.Thread):
         self.startup_delay = startup_delay
         self.stop_delay = stop_delay
         self._current_pid: Optional[int] = None
-        self._running = False
+        self._stop_event = threading.Event()
 
     def _find_pid(self) -> Optional[int]:
         target = self.process_name.lower()
@@ -39,13 +39,13 @@ class ProcessMonitor(threading.Thread):
         return None
 
     def run(self):
-        self._running = True
-        while self._running:
+        self._stop_event.clear()
+        while not self._stop_event.is_set():
             self._poll_once()
-            time.sleep(self.poll_interval)
+            self._stop_event.wait(timeout=self.poll_interval)
 
     def stop(self):
-        self._running = False
+        self._stop_event.set()
 
     def _poll_once(self):
         pid = self._find_pid()
@@ -56,7 +56,7 @@ class ProcessMonitor(threading.Thread):
             log.info(f"Process detected (PID {pid}). Waiting {self.startup_delay}s for startup to settle...")
             # Wait for startup to settle (Rekordbox spawns multiple
             # short-lived processes during launch), then re-check
-            time.sleep(self.startup_delay)
+            self._stop_event.wait(timeout=self.startup_delay)
             pid = self._find_pid()
             if pid is None:
                 return  # Transient process — ignore
@@ -65,7 +65,7 @@ class ProcessMonitor(threading.Thread):
         elif not is_running and was_running:
             # Debounce stop: Rekordbox briefly disappears between
             # process restarts during startup. Wait and re-check.
-            time.sleep(self.stop_delay)
+            self._stop_event.wait(timeout=self.stop_delay)
             pid = self._find_pid()
             if pid is not None:
                 # Process came back — update PID, don't fire stop

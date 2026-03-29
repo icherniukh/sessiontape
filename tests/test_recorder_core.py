@@ -1,4 +1,3 @@
-import queue
 import tempfile
 import unittest
 from unittest.mock import MagicMock
@@ -8,7 +7,7 @@ from src.recorder_core import PCMStreamRecorder
 
 class TestPCMStreamRecorder(unittest.TestCase):
     def test_calculate_rms(self):
-        recorder = PCMStreamRecorder(output_dir="/tmp", queue=queue.Queue(), sample_rate=48000)
+        recorder = PCMStreamRecorder(output_dir="/tmp", sample_rate=48000)
         chunk = b"\x64\x00" * 4
         rms = recorder._calculate_rms(chunk)
         self.assertAlmostEqual(rms, 100.0)
@@ -17,7 +16,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             recorder = PCMStreamRecorder(
                 output_dir=tmpdir,
-                queue=queue.Queue(),
+                on_tap_broken=lambda: None,
                 sample_rate=48000,
                 silence_threshold_db=-50,
                 decay_tail=0,
@@ -33,7 +32,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
             recorder._raw_file.close()
 
     def test_circular_buffer_limits(self):
-        recorder = PCMStreamRecorder(output_dir="/tmp", queue=queue.Queue(), decay_tail=5.0)
+        recorder = PCMStreamRecorder(output_dir="/tmp", on_tap_broken=lambda: None, decay_tail=5.0)
         self.assertEqual(recorder.buffer_maxlen, 50)
         self.assertEqual(recorder.ring_buffer.maxlen, 50)
 
@@ -44,7 +43,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
 
     def test_mp3_export_format(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            recorder = PCMStreamRecorder(output_dir=tmpdir, queue=queue.Queue(), export_format="mp3")
+            recorder = PCMStreamRecorder(output_dir=tmpdir, on_tap_broken=lambda: None, export_format="mp3")
             recorder._open_new_file()
             self.assertTrue(recorder._output_path.endswith(".mp3"))
             self.assertTrue(recorder._raw_path.endswith(".raw"))
@@ -52,7 +51,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
 
     def test_finalize_exports_active_session(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            recorder = PCMStreamRecorder(output_dir=tmpdir, queue=queue.Queue(), decay_tail=0)
+            recorder = PCMStreamRecorder(output_dir=tmpdir, on_tap_broken=lambda: None, decay_tail=0)
             recorder.exporter.export_async = MagicMock()
 
             recorder.process_chunk(b"\xFF\x7F" * 10)

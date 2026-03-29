@@ -5,7 +5,7 @@ import threading
 from typing import Optional
 
 from src.backends.base import CaptureBackend
-from src.events import CaptureDied, EventQueue
+from src.events import CaptureDied, EventQueue, TapBroken
 from src.platform import get_platform_backend
 from src.recorder_core import PCMStreamRecorder
 
@@ -45,7 +45,7 @@ class AudioCapture:
 
         self.recorder = PCMStreamRecorder(
             output_dir=output_dir,
-            queue=queue,
+            on_tap_broken=lambda: self.queue.put(TapBroken()),
             sample_rate=sample_rate,
             silence_threshold_db=silence_threshold_db,
             min_silence_duration=min_silence_duration,

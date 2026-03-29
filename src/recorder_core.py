@@ -11,9 +11,7 @@ import wave
 from array import array
 from collections import deque
 from datetime import datetime
-from typing import Optional
-
-from src.events import EventQueue, TapBroken
+from typing import Callable, Optional
 
 log = logging.getLogger("rb-recorder")
 
@@ -118,7 +116,7 @@ class PCMStreamRecorder:
     def __init__(
         self,
         output_dir: str,
-        queue: EventQueue,
+        on_tap_broken: Optional[Callable[[], None]] = None,
         sample_rate: int = 48000,
         silence_threshold_db: float = -50.0,
         min_silence_duration: float = 15.0,
@@ -126,7 +124,7 @@ class PCMStreamRecorder:
         export_format: str = "wav",
     ):
         self.output_dir = os.path.abspath(os.path.expanduser(output_dir))
-        self.queue = queue
+        self.on_tap_broken = on_tap_broken
         self.sample_rate = sample_rate
         self.export_format = export_format.lower()
 
@@ -206,7 +204,8 @@ class PCMStreamRecorder:
                     f"tap definitely broken. Pushing TapBroken event."
                 )
                 self._tap_broken_fired = True
-                self.queue.put(TapBroken())
+                if self.on_tap_broken:
+                    self.on_tap_broken()
             elif self.state == "ACTIVE" and self._consecutive_zero_chunks in (10, 50, 150):
                 log.warning(
                     f"[DIAG] {self._consecutive_zero_chunks} consecutive all-zero chunks "
