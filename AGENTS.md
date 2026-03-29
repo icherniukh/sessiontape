@@ -9,6 +9,19 @@
 - **audiotee stability** — the user noted audiotee "is not stable nowadays." No issues observed during short tests but long sessions may reveal problems.
 - **Permissions UX** — Screen Recording permission must be granted manually. No guided setup flow.
 
+## Planned Work: audiotee Upstream PR Readiness
+
+These tasks should be performed once the main feature work is complete.
+
+1.  **Benchmarking:** Measure performance difference between raw `write(2)` and `FileHandle.write(Data)` in the audio hot path using a standalone Swift script.
+2.  **Diagnostic Branch:** Create a dedicated branch for debug diagnostics:
+    *   **Hot-Path Jitter:** Track and log delta time between `processAudio` callbacks (expecting ~10-20ms).
+    *   **Alignment/Zero-Buffer Stats:** Log first few bytes and zero-buffer counts to debug "silent tap" issues.
+    *   **CPU Budget Logging:** Measure execution time within the IO proc versus the callback interval.
+3.  **Upstream Prep:**
+    *   Revert `BinaryOutputHandler.swift` to idiomatic Swift if `write(2)` proves unnecessary.
+    *   Verify all local hacks in `AudioTeeCLI` and `AudioTeeCore` are surgical and ready for a clean PR to `makeusabrew/audiotee`.
+
 ## Issue Tracking
 
 This project uses **GitHub Issues** for issue tracking.

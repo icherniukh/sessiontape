@@ -1,33 +1,49 @@
 import logging
 import os
+import queue
 import signal
-import time
 from typing import Optional
+
+import psutil
 
 from src.capture import AudioCapture
 from src.config import Config
+from src.events import (CaptureDied, EventQueue, ProcessStarted, ProcessStopped,
+                        ShutdownRequested, TapBroken)
 from src.process_monitor import ProcessMonitor
 from src.recorder_core import recover_orphaned_raw_files
 
 log = logging.getLogger("rb-recorder")
 
-_WATCHDOG_INTERVAL = 5 * 60  # seconds between watchdog checks
+_STALE_PROCESS_NAMES = {"audiotee", "auto-rb-recorder"}
+
+
+def _cleanup_stale_processes() -> None:
+    """Kill any leftover audiotee or auto-rb-recorder processes from a previous run."""
+    current_pid = os.getpid()
+    own_pids = {current_pid, os.getppid()}
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            if proc.info["name"] in _STALE_PROCESS_NAMES and proc.pid not in own_pids:
+                log.warning(f"Killing stale process: {proc.info['name']} PID {proc.pid}")
+                proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
 
 
 class RecorderDaemon:
     def __init__(self, config: Config):
+        _cleanup_stale_processes()
         self.config = config
         self._capture: Optional[AudioCapture] = None
-        self._running = False
         self._current_pid: Optional[int] = None
-        self._capture_started_at: float = 0.0
-        self._next_watchdog_at: float = 0.0
+        self._queue: EventQueue = queue.Queue()
 
         self._monitor = ProcessMonitor(
-            config.process_name, poll_interval=config.poll_interval
+            config.process_name,
+            queue=self._queue,
+            poll_interval=config.poll_interval
         )
-        self._monitor.on_start = self._on_rekordbox_start
-        self._monitor.on_stop = self._on_rekordbox_stop
 
         # Recover any orphaned files from previous interrupted runs
         recover_orphaned_raw_files(
@@ -36,15 +52,14 @@ class RecorderDaemon:
             export_format=self.config.export_format
         )
 
-    def _on_rekordbox_start(self, pid: int):
+    def _start_capture(self, pid: int):
         log.info(f"Rekordbox detected (PID {pid}). Starting recording.")
         os.makedirs(self.config.output_dir, exist_ok=True)
         self._current_pid = pid
-        self._capture_started_at = time.time()
-        self._next_watchdog_at = self._capture_started_at + _WATCHDOG_INTERVAL
         self._capture = AudioCapture(
             pid=pid,
             output_dir=self.config.output_dir,
+            queue=self._queue,
             sample_rate=self.config.sample_rate,
             silence_threshold_db=self.config.silence_threshold_db,
             min_silence_duration=self.config.min_silence_duration,
@@ -53,49 +68,60 @@ class RecorderDaemon:
         )
         self._capture.start()
 
-    def _on_rekordbox_stop(self):
+    def _stop_capture(self, keep_pid: bool = False):
         if not self._capture:
             return
-        log.info("Rekordbox closed. Stopping recording.")
+        log.info("Stopping recording.")
         self._capture.stop()
         self._capture = None
-        self._current_pid = None
-
-    def _watchdog_check(self) -> None:
-        if not self._capture or not self._current_pid:
-            return
-        if time.time() < self._next_watchdog_at:
-            return
-
-        self._next_watchdog_at = time.time() + _WATCHDOG_INTERVAL
-
-        last_active = self._capture.recorder.last_active_at
-        silent_for = time.time() - (last_active if last_active else self._capture_started_at)
-
-        if silent_for < _WATCHDOG_INTERVAL:
-            return
-
-        log.warning(
-            f"Watchdog: Rekordbox running but no audio detected for {silent_for / 60:.0f}m — "
-            f"restarting capture for fresh tap (PID {self._current_pid})"
-        )
-        pid = self._current_pid
-        self._capture.stop()
-        self._capture = None
-        self._on_rekordbox_start(pid)
+        if not keep_pid:
+            self._current_pid = None
 
     def run(self):
-        self._running = True
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
-        signal.signal(signal.SIGINT, self._handle_shutdown)
-        log.info("Rekordbox Auto-Recorder armed. Waiting for Rekordbox...")
+        # Register signal handlers to push ShutdownRequested to the queue
+        def _on_signal(signum, frame):
+            # Using put_nowait because signal handlers should be fast
+            try:
+                self._queue.put_nowait(ShutdownRequested())
+            except queue.Full:
+                pass
 
-        while self._running:
-            self._monitor.poll_once()
-            self._watchdog_check()
-            time.sleep(self.config.poll_interval)
+        signal.signal(signal.SIGTERM, _on_signal)
+        signal.signal(signal.SIGINT, _on_signal)
 
-    def _handle_shutdown(self, signum, frame):
-        log.info("Shutdown signal received.")
-        self._running = False
-        self._on_rekordbox_stop()
+        log.info(f"--- rb-recorder started · PID {os.getpid()} ---")
+        
+        # Start the process monitor thread
+        self._monitor.start()
+
+        try:
+            while True:
+                event = self._queue.get()
+                
+                if isinstance(event, ProcessStarted):
+                    self._start_capture(event.pid)
+                
+                elif isinstance(event, ProcessStopped):
+                    log.info("Rekordbox closed.")
+                    self._stop_capture()
+                
+                elif isinstance(event, CaptureDied):
+                    if self._current_pid:
+                        log.warning(f"Capture helper died (exit code {event.exit_code}). Restarting capture.")
+                        self._stop_capture(keep_pid=True)
+                        # Rekordbox is likely still running if we haven't received ProcessStopped
+                        self._start_capture(self._current_pid)
+                
+                elif isinstance(event, TapBroken):
+                    if self._current_pid:
+                        log.warning("Watchdog: Tap broken (all zeros). Restarting capture for fresh tap.")
+                        self._stop_capture(keep_pid=True)
+                        self._start_capture(self._current_pid)
+                
+                elif isinstance(event, ShutdownRequested):
+                    log.info("Shutdown requested.")
+                    break
+        finally:
+            self._stop_capture()
+            self._monitor.stop()
+            log.info("Daemon exit.")

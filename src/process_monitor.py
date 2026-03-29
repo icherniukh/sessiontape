@@ -1,20 +1,27 @@
+import logging
 import os
+import threading
 import time
-from typing import Callable, Optional
+from typing import Optional
 
 import psutil
 
+from src.events import EventQueue, ProcessStarted, ProcessStopped
 
-class ProcessMonitor:
-    def __init__(self, process_name: str, poll_interval: float = 2.0,
+log = logging.getLogger("rb-recorder")
+
+
+class ProcessMonitor(threading.Thread):
+    def __init__(self, process_name: str, queue: EventQueue, poll_interval: float = 2.0,
                  startup_delay: float = 10.0, stop_delay: float = 10.0):
+        super().__init__(daemon=True, name="ProcessMonitor")
         self.process_name = process_name
+        self.queue = queue
         self.poll_interval = poll_interval
         self.startup_delay = startup_delay
         self.stop_delay = stop_delay
-        self.on_start: Callable[[int], None] = lambda pid: None
-        self.on_stop: Callable[[], None] = lambda: None
         self._current_pid: Optional[int] = None
+        self._running = False
 
     def _find_pid(self) -> Optional[int]:
         target = self.process_name.lower()
@@ -31,12 +38,22 @@ class ProcessMonitor:
                 continue
         return None
 
-    def poll_once(self):
+    def run(self):
+        self._running = True
+        while self._running:
+            self._poll_once()
+            time.sleep(self.poll_interval)
+
+    def stop(self):
+        self._running = False
+
+    def _poll_once(self):
         pid = self._find_pid()
         was_running = self._current_pid is not None
         is_running = pid is not None
 
         if is_running and not was_running:
+            log.info(f"Process detected (PID {pid}). Waiting {self.startup_delay}s for startup to settle...")
             # Wait for startup to settle (Rekordbox spawns multiple
             # short-lived processes during launch), then re-check
             time.sleep(self.startup_delay)
@@ -44,7 +61,7 @@ class ProcessMonitor:
             if pid is None:
                 return  # Transient process — ignore
             self._current_pid = pid
-            self.on_start(pid)
+            self.queue.put(ProcessStarted(pid=pid))
         elif not is_running and was_running:
             # Debounce stop: Rekordbox briefly disappears between
             # process restarts during startup. Wait and re-check.
@@ -55,4 +72,4 @@ class ProcessMonitor:
                 self._current_pid = pid
                 return
             self._current_pid = None
-            self.on_stop()
+            self.queue.put(ProcessStopped())

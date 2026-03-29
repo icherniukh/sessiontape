@@ -1,3 +1,4 @@
+import queue
 import sys
 import tempfile
 import unittest
@@ -34,7 +35,8 @@ class TestAudioCapture(unittest.TestCase):
         mock_popen.return_value = mock_proc
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cap = AudioCapture(pid=12345, output_dir=tmpdir, sample_rate=48000)
+            q = queue.Queue()
+            cap = AudioCapture(pid=12345, output_dir=tmpdir, queue=q, sample_rate=48000)
             cap.start()
 
             mock_popen.assert_called_once()
@@ -44,7 +46,6 @@ class TestAudioCapture(unittest.TestCase):
                 self.assertIn("--pid", args)
             else:
                 self.assertEqual(os.path.basename(args[0]), "audiotee")
-                self.assertIn("--flush", args)
             self.assertIn("12345", args)
 
             # Two threads are started: stderr logger + PCM reader
@@ -56,7 +57,8 @@ class TestAudioCapture(unittest.TestCase):
             cap.stop()
 
     def test_stop_without_start_is_noop(self):
-        cap = AudioCapture(pid=12345, output_dir="/tmp", sample_rate=48000)
+        q = queue.Queue()
+        cap = AudioCapture(pid=12345, output_dir="/tmp", queue=q, sample_rate=48000)
         cap.stop()
         self.assertFalse(cap.is_recording)
 
@@ -67,9 +69,11 @@ class TestAudioCapture(unittest.TestCase):
         backend = StubBackend(mock_proc)
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            q = queue.Queue()
             cap = AudioCapture(
                 pid=12345,
                 output_dir=tmpdir,
+                queue=q,
                 sample_rate=44100,
                 backend=backend,
             )
@@ -88,7 +92,8 @@ class TestAudioCapture(unittest.TestCase):
         mock_popen.return_value = mock_proc
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cap = AudioCapture(pid=12345, output_dir=tmpdir)
+            q = queue.Queue()
+            cap = AudioCapture(pid=12345, output_dir=tmpdir, queue=q)
             cap.start()
             cap.recorder.finalize = MagicMock()
 
@@ -105,7 +110,8 @@ class TestAudioCapture(unittest.TestCase):
         mock_popen.return_value = mock_proc
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cap = AudioCapture(pid=12345, output_dir=tmpdir)
+            q = queue.Queue()
+            cap = AudioCapture(pid=12345, output_dir=tmpdir, queue=q)
             cap.start()
             cap.stop()
 

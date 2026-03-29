@@ -9,16 +9,13 @@ from src.recorder_core import _find_executable
 log = logging.getLogger("rb-recorder")
 
 
-class AudioteeCaptureBackend(CaptureBackend):
+class MacCaptureBackend(CaptureBackend):
     def start(self, pid: int, sample_rate: int) -> subprocess.Popen:
         return subprocess.Popen(
             [
-                _find_executable("audiotee"),
-                "--include-processes",
+                _find_executable("mac-capture"),
                 str(pid),
-                "--sample-rate",
                 str(sample_rate),
-                "--stereo",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -30,6 +27,6 @@ class AudioteeCaptureBackend(CaptureBackend):
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            log.warning(f"audiotee (PID {proc.pid}) did not exit after SIGTERM — sending SIGKILL")
+            log.warning(f"mac-capture (PID {proc.pid}) did not exit after SIGTERM — sending SIGKILL")
             proc.kill()
             proc.wait()

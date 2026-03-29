@@ -5,6 +5,7 @@ import threading
 from typing import Optional
 
 from src.backends.base import CaptureBackend
+from src.events import CaptureDied, EventQueue
 from src.platform import get_platform_backend
 from src.recorder_core import PCMStreamRecorder
 
@@ -25,6 +26,7 @@ class AudioCapture:
         self,
         pid: int,
         output_dir: str,
+        queue: EventQueue,
         sample_rate: int = 48000,
         source_name: str = "rekordbox",
         silence_threshold_db: float = -50.0,
@@ -35,6 +37,7 @@ class AudioCapture:
     ):
         self.pid = pid
         self.output_dir = output_dir
+        self.queue = queue
         self.sample_rate = sample_rate
         self.source_name = source_name
         self.is_recording = False
@@ -42,6 +45,7 @@ class AudioCapture:
 
         self.recorder = PCMStreamRecorder(
             output_dir=output_dir,
+            queue=queue,
             sample_rate=sample_rate,
             silence_threshold_db=silence_threshold_db,
             min_silence_duration=min_silence_duration,
@@ -69,7 +73,15 @@ class AudioCapture:
                 log.debug("First PCM chunk received from capture helper")
             self.recorder.process_chunk(chunk)
         exit_code = self._proc.poll() if self._proc else None
-        log.info(f"Read loop exited after {chunks_read} chunks (helper exit code: {exit_code})")
+        if self.is_recording:
+            # Loop exited while is_recording=True — helper died without being asked to stop
+            log.warning(
+                f"[DIAG] Capture helper died unexpectedly after {chunks_read} chunks "
+                f"(exit code: {exit_code})"
+            )
+            self.queue.put(CaptureDied(exit_code=exit_code))
+        else:
+            log.info(f"Read loop exited after {chunks_read} chunks (helper exit code: {exit_code})")
 
     def _log_stderr(self) -> None:
         if not self._proc or not self._proc.stderr:
@@ -78,8 +90,11 @@ class AudioCapture:
             line = raw_line.strip()
             if not line:
                 continue
+            decoded = line.decode(errors="replace") if isinstance(line, bytes) else line
+            
+            # Try to parse audiotee JSON
             try:
-                msg = json.loads(line)
+                msg = json.loads(decoded)
                 msg_type = msg.get("message_type", "info")
                 data = msg.get("data") or {}
                 text = data.get("message", "")
@@ -89,9 +104,19 @@ class AudioCapture:
                     text = f"{text} [{ctx_str}]"
                 level = _AUDIOTEE_LEVEL_MAP.get(msg_type, logging.INFO)
                 audiotee_log.log(level, "%s", text)
+                continue
             except (json.JSONDecodeError, AttributeError, KeyError):
-                decoded = line.decode(errors="replace") if isinstance(line, bytes) else line
-                audiotee_log.warning(f"[stderr] {decoded}")
+                pass
+            
+            # Parse mac-capture plain text logs
+            if decoded.startswith("INFO: "):
+                audiotee_log.info(decoded[6:])
+            elif decoded.startswith("ERROR: "):
+                audiotee_log.error(decoded[7:])
+            elif decoded.startswith("DEBUG: "):
+                audiotee_log.debug(decoded[7:])
+            else:
+                audiotee_log.info(decoded)
 
     def start(self) -> None:
         if self.is_recording:
@@ -100,7 +125,7 @@ class AudioCapture:
         self.is_recording = True
         self.recorder.reset()
         self._proc = self.backend.start(self.pid, self.sample_rate)
-        log.info(f"Capture helper started (PID={self._proc.pid})")
+        log.info(f"TRACING: Capture helper started (PID={self._proc.pid})")
 
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
@@ -113,11 +138,11 @@ class AudioCapture:
         if not self.is_recording:
             return
 
+        self.is_recording = False
+
         if self._proc:
             self.backend.stop(self._proc)
             self._proc = None
-
-        self.is_recording = False
 
         if self._reader_thread:
             self._reader_thread.join(timeout=2.0)

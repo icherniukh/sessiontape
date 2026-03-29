@@ -1,11 +1,12 @@
 import os
+import queue
 import sys
 import time
 import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from src.capture import AudioCapture
 
@@ -14,7 +15,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 FAKE_AUDIOTEE = str(FIXTURE_DIR / "fake_audiotee.py")
 FAKE_WINDOWS_CAPTURE = str(FIXTURE_DIR / "fake_windows_capture.py")
 
-def _make_capture(tmpdir, **kwargs):
+def _make_capture(tmpdir, q, **kwargs):
     """Create an AudioCapture that invokes the platform-appropriate fake helper."""
     if sys.platform == "win32":
         from src.backends.windows_capture import WindowsCaptureBackend
@@ -28,10 +29,17 @@ def _make_capture(tmpdir, **kwargs):
                     stderr=_sp.DEVNULL,
                 )
 
-        return AudioCapture(backend=FakeWindowsBackend(), **kwargs)
+        return AudioCapture(queue=q, backend=FakeWindowsBackend(), **kwargs)
     else:
-        with patch(_BACKEND_PATCH, side_effect=lambda _: FAKE_AUDIOTEE):
-            return AudioCapture(**kwargs)
+        # Mock the backend to use our fake_audiotee script
+        mock_backend = MagicMock()
+        import subprocess as _sp
+        mock_backend.start.side_effect = lambda pid, sr: _sp.Popen(
+            [sys.executable, FAKE_AUDIOTEE, "--include-processes", str(pid), "--sample-rate", str(sr)],
+            stdout=_sp.PIPE,
+            stderr=_sp.PIPE,
+        )
+        return AudioCapture(queue=q, backend=mock_backend, **kwargs)
 
 
 def wait_until(predicate, timeout: float = 5.0, interval: float = 0.01) -> None:
@@ -52,8 +60,10 @@ class TestAudioCaptureIntegration(unittest.TestCase):
     def test_real_subprocess_stream_splits_into_multiple_wavs(self):
         with TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"RB_TEST_AUDIO_SCENARIO": "sound:3,silence:3,sound:2"}, clear=False):
+                q = queue.Queue()
                 cap = _make_capture(
                     tmpdir,
+                    q,
                     pid=12345,
                     output_dir=tmpdir,
                     sample_rate=48000,
@@ -75,8 +85,10 @@ class TestAudioCaptureIntegration(unittest.TestCase):
     def test_real_subprocess_stream_preserves_decay_tail(self):
         with TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"RB_TEST_AUDIO_SCENARIO": "silence:2,sound:1"}, clear=False):
+                q = queue.Queue()
                 cap = _make_capture(
                     tmpdir,
+                    q,
                     pid=12345,
                     output_dir=tmpdir,
                     sample_rate=48000,

@@ -11,6 +11,8 @@ from collections import deque
 from datetime import datetime
 from typing import Optional
 
+from src.events import EventQueue, TapBroken
+
 log = logging.getLogger("rb-recorder")
 
 
@@ -116,13 +118,15 @@ class PCMStreamRecorder:
     def __init__(
         self,
         output_dir: str,
+        queue: EventQueue,
         sample_rate: int = 48000,
         silence_threshold_db: float = -50.0,
         min_silence_duration: float = 15.0,
         decay_tail: float = 5.0,
         export_format: str = "wav",
     ):
-        self.output_dir = output_dir
+        self.output_dir = os.path.abspath(os.path.expanduser(output_dir))
+        self.queue = queue
         self.sample_rate = sample_rate
         self.export_format = export_format.lower()
 
@@ -151,7 +155,9 @@ class PCMStreamRecorder:
         self.ring_buffer = deque(maxlen=self.buffer_maxlen)
         self.silence_count = 0
         self._chunk_count = 0
-        self.last_active_at: float = 0.0  # epoch time of last PASSIVE→ACTIVE transition
+        self.last_active_at: float = 0.0  # epoch time of last real audio chunk in ACTIVE state
+        self._last_rms: float = 0.0  # for drop detection
+        self._consecutive_zero_chunks: int = 0  # perfect zeros = tap broken signal
 
         self._raw_path: Optional[str] = None
         self._output_path: Optional[str] = None
@@ -163,15 +169,48 @@ class PCMStreamRecorder:
         self.silence_count = 0
         self._chunk_count = 0
         self.last_active_at = 0.0
+        self._last_rms = 0.0
+        self._consecutive_zero_chunks = 0
 
     def process_chunk(self, chunk: bytes) -> None:
         rms = self._calculate_rms(chunk)
         is_silent = rms < self.rms_threshold
 
         self._chunk_count += 1
-        if self._chunk_count % 50 == 0:  # log every ~5s
+        if self._chunk_count % 100 == 0:  # log every ~10s
             db = 20 * math.log10(rms / 32768.0) if rms > 0 else -math.inf
             log.debug(f"[{self.state}] chunk #{self._chunk_count} RMS={rms:.0f} ({db:.1f} dB), threshold={self.rms_threshold:.0f}")
+
+        # Detect sudden drop to near-zero while actively recording — tap may have broken.
+        # Only meaningful in ACTIVE state; in PASSIVE, zeros are expected (music not playing).
+        if self.state == "ACTIVE":
+            if self._last_rms > self.rms_threshold * 10 and rms == 0:
+                log.warning(f"[DIAG] RMS dropped to zero at chunk #{self._chunk_count} (was {self._last_rms:.0f}) — possible tap failure")
+            elif self._last_rms > self.rms_threshold * 100 and rms < self.rms_threshold:
+                db_before = 20 * math.log10(self._last_rms / 32768.0)
+                db_now = 20 * math.log10(rms / 32768.0) if rms > 0 else -math.inf
+                log.warning(f"[DIAG] RMS dropped from {db_before:.1f} dB to {db_now:.1f} dB at chunk #{self._chunk_count}")
+        self._last_rms = rms
+
+        # Perfect zeros (rms == 0.0 exactly) are a strong broken-tap signal.
+        # Real silence has noise floor; a tap delivering all-zero bytes is pathological.
+        if rms == 0.0:
+            self._consecutive_zero_chunks += 1
+            # 900 chunks = 90s @ 100ms/chunk. This replaces the old watchdog timer.
+            if self._consecutive_zero_chunks == 900:
+                log.warning(
+                    f"[DIAG] 900 consecutive all-zero chunks (90s) — "
+                    f"tap definitely broken. Pushing TapBroken event."
+                )
+                self.queue.put(TapBroken())
+            elif self.state == "ACTIVE" and self._consecutive_zero_chunks in (10, 50, 150):
+                log.warning(
+                    f"[DIAG] {self._consecutive_zero_chunks} consecutive all-zero chunks "
+                    f"({self._consecutive_zero_chunks * self.chunk_duration:.0f}s) — "
+                    f"tap likely broken"
+                )
+        else:
+            self._consecutive_zero_chunks = 0
 
         if self.state == "PASSIVE":
             self.ring_buffer.append(chunk)
@@ -198,11 +237,23 @@ class PCMStreamRecorder:
         if is_silent:
             self.silence_count += 1
             if self.silence_count >= self.silence_chunks_threshold:
-                log.info("Continuous silence detected. Transitioning to PASSIVE.")
-                self._close_current_file()
-                self.state = "PASSIVE"
+                if self._consecutive_zero_chunks > 10:
+                    # Tap is delivering perfect zeros — broken tap, not real silence.
+                    # Don't split the recording; let the watchdog restart the tap instead.
+                    # Throttle this warning to avoid audio glitches due to logging overhead.
+                    if self.silence_count % 100 == 0:
+                        log.warning(
+                            f"[DIAG] Suppressing session close — tap broken "
+                            f"({self._consecutive_zero_chunks} zero chunks). Watchdog will restart."
+                        )
+                else:
+                    log.info("Continuous silence detected. Transitioning to PASSIVE.")
+                    self._close_current_file()
+                    self.state = "PASSIVE"
+                    self.last_active_at = time.time()
         else:
             self.silence_count = 0
+            self.last_active_at = time.time()  # refresh on every real audio chunk
 
     def finalize(self) -> None:
         if self.state == "ACTIVE":
@@ -274,6 +325,12 @@ def recover_orphaned_raw_files(output_dir: str, sample_rate: int, export_format:
     )
     
     for raw_path in raw_files:
+        # Skip files touched in the last 30s — previous process may still be converting them
+        age = time.time() - os.path.getmtime(raw_path)
+        if age < 30:
+            log.info(f"Skipping recent raw file (age={age:.0f}s, likely in-flight): {raw_path}")
+            continue
+
         size = os.path.getsize(raw_path)
         if size == 0:
             log.info(f"Deleting empty orphaned file: {raw_path}")
