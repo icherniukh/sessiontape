@@ -24,7 +24,6 @@ from AppKit import (
     NSWindowStyleMaskMiniaturizable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSMakePoint, NSMakeSize
 
 from src.config import Config, platform_config_path
 
@@ -38,33 +37,56 @@ _LABEL_W = 150
 _CTRL_X = _MARGIN + _LABEL_W + 8
 _CTRL_W = _W - _CTRL_X - _MARGIN
 
+# NSTextAlignment constants (avoid magic numbers inline)
+_ALIGN_RIGHT = 1
+_ALIGN_LEFT = 0
+
+# NSAlert button-return constants
+_ALERT_OK = 1           # NSModalResponseOK
+_ALERT_FIRST = 1000     # NSAlertFirstButtonReturn
+
+
+def _collapse_home(path: str) -> str:
+    home = os.path.expanduser("~")
+    return ("~" + path[len(home):]) if path.startswith(home) else path
+
+
+def _expand_path(display: str) -> str:
+    return os.path.expanduser(display)
+
+
+def _alert_modal(message: str, info: str, *buttons: str) -> int:
+    """Show a synchronous NSAlert and return the button index result."""
+    alert = NSAlert.alloc().init()
+    alert.setMessageText_(message)
+    alert.setInformativeText_(info)
+    for btn in buttons:
+        alert.addButtonWithTitle_(btn)
+    return alert.runModal()
+
 
 def _label(text: str, x: float, y: float, w: float, h: float = 20) -> NSTextField:
-    f = NSMakeRect(x, y, w, h)
-    tf = NSTextField.alloc().initWithFrame_(f)
+    tf = NSTextField.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
     tf.setStringValue_(text)
     tf.setBezeled_(False)
     tf.setDrawsBackground_(False)
     tf.setEditable_(False)
     tf.setSelectable_(False)
-    tf.setAlignment_(1)  # NSTextAlignmentRight
+    tf.setAlignment_(_ALIGN_RIGHT)
     return tf
 
 
 def _editable_field(x: float, y: float, w: float, h: float = 22) -> NSTextField:
-    f = NSMakeRect(x, y, w, h)
-    tf = NSTextField.alloc().initWithFrame_(f)
+    tf = NSTextField.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
     tf.setBezeled_(True)
     tf.setEditable_(True)
     return tf
 
 
 def _button(title: str, x: float, y: float, w: float, h: float = 28) -> NSButton:
-    f = NSMakeRect(x, y, w, h)
-    btn = NSButton.alloc().initWithFrame_(f)
+    btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
     btn.setTitle_(title)
     btn.setBezelStyle_(NSBezelStyleRounded)
-    btn.setButtonType_(0)  # NSMomentaryLightButton
     return btn
 
 
@@ -83,16 +105,12 @@ class PreferencesWindowController(NSObject):
         self._controls: dict = {}
         return self
 
-    # ── Public interface ──────────────────────────────────────────────────────
-
     @objc.python_method
     def showWindow(self) -> None:
         if self._panel is None:
             self._build_panel()
         NSApp.activateIgnoringOtherApps_(True)
         self._panel.makeKeyAndOrderFront_(None)
-
-    # ── Panel construction ────────────────────────────────────────────────────
 
     @objc.python_method
     def _build_panel(self) -> None:
@@ -109,15 +127,13 @@ class PreferencesWindowController(NSObject):
         self._panel.center()
 
         content = self._panel.contentView()
-        y = _H - _MARGIN - _ROW_H  # top → bottom layout
+        y = _H - _MARGIN - _ROW_H
 
-        # Helper to add one settings row
         def row(label_text, control, y_pos):
-            lbl = _label(label_text, _MARGIN, y_pos, _LABEL_W)
-            content.addSubview_(lbl)
+            content.addSubview_(_label(label_text, _MARGIN, y_pos, _LABEL_W))
             content.addSubview_(control)
 
-        # ── Output Folder ──────────────────────────────────────────────────
+        # Output Folder
         dir_field = _editable_field(_CTRL_X, y, _CTRL_W - 68)
         dir_field.setEditable_(False)
         choose_btn = _button("Choose\u2026", _CTRL_X + _CTRL_W - 62, y - 2, 60)
@@ -128,7 +144,7 @@ class PreferencesWindowController(NSObject):
         self._controls["output_dir"] = dir_field
         y -= _ROW_H + _ROW_GAP
 
-        # ── Export Format ──────────────────────────────────────────────────
+        # Export Format
         fmt_popup = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(_CTRL_X, y, 120, _ROW_H))
         fmt_popup.addItemWithTitle_("WAV")
         fmt_popup.addItemWithTitle_("MP3")
@@ -136,7 +152,7 @@ class PreferencesWindowController(NSObject):
         self._controls["export_format"] = fmt_popup
         y -= _ROW_H + _ROW_GAP
 
-        # ── Sample Rate ────────────────────────────────────────────────────
+        # Sample Rate
         sr_popup = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(_CTRL_X, y, 120, _ROW_H))
         for rate in ("44100", "48000", "96000"):
             sr_popup.addItemWithTitle_(rate)
@@ -144,7 +160,7 @@ class PreferencesWindowController(NSObject):
         self._controls["sample_rate"] = sr_popup
         y -= _ROW_H + _ROW_GAP
 
-        # ── Silence Threshold ──────────────────────────────────────────────
+        # Silence Threshold
         slider = NSSlider.alloc().initWithFrame_(NSMakeRect(_CTRL_X, y, _CTRL_W - 60, _ROW_H))
         slider.setMinValue_(-80)
         slider.setMaxValue_(-20)
@@ -162,7 +178,6 @@ class PreferencesWindowController(NSObject):
         self._controls["silence_threshold_label"] = slider_label
         y -= _ROW_H + _ROW_GAP
 
-        # ── Stepper+field rows ─────────────────────────────────────────────
         def stepper_row(label_text, key, min_val, max_val, step, suffix, y_pos):
             field = _editable_field(_CTRL_X, y_pos, 60)
             stepper = NSStepper.alloc().initWithFrame_(NSMakeRect(_CTRL_X + 64, y_pos, 18, _ROW_H))
@@ -171,13 +186,11 @@ class PreferencesWindowController(NSObject):
             stepper.setIncrement_(step)
             stepper.setValueWraps_(False)
             stepper.setTarget_(self)
-            stepper.setAction_(
-                objc.selector(self._stepper_changed_, signature=b"v@:@")
-            )
+            stepper.setAction_(objc.selector(self._stepper_changed_, signature=b"v@:@"))
             objc.setAssociated(stepper, "field_ref", field)
             objc.setAssociated(stepper, "suffix", suffix)
             unit_lbl = _label(suffix, _CTRL_X + 86, y_pos, 40, 20)
-            unit_lbl.setAlignment_(0)  # NSTextAlignmentLeft
+            unit_lbl.setAlignment_(_ALIGN_LEFT)
             row(label_text, field, y_pos)
             content.addSubview_(stepper)
             content.addSubview_(unit_lbl)
@@ -192,21 +205,19 @@ class PreferencesWindowController(NSObject):
         stepper_row("Poll Interval", "poll_interval", 0.5, 30, 0.5, "s", y)
         y -= _ROW_H + _ROW_GAP
 
-        # ── Process Name ───────────────────────────────────────────────────
+        # Process Name
         proc_field = _editable_field(_CTRL_X, y, _CTRL_W)
         proc_field.setPlaceholderString_("rekordbox")
         row("Process Name", proc_field, y)
         self._controls["process_name"] = proc_field
-        y -= _ROW_H + _ROW_GAP
 
-        # ── Cancel / Save buttons ──────────────────────────────────────────
-        btn_y = _MARGIN
-        save_btn = _button("Save", _W - _MARGIN - 80, btn_y, 76)
+        # Cancel / Save buttons
+        save_btn = _button("Save", _W - _MARGIN - 80, _MARGIN, 76)
         save_btn.setKeyEquivalent_("\r")
         save_btn.setTarget_(self)
         save_btn.setAction_(objc.selector(self._save_clicked_, signature=b"v@:@"))
 
-        cancel_btn = _button("Cancel", _W - _MARGIN - 168, btn_y, 80)
+        cancel_btn = _button("Cancel", _W - _MARGIN - 168, _MARGIN, 80)
         cancel_btn.setTarget_(self)
         cancel_btn.setAction_(objc.selector(self._cancel_clicked_, signature=b"v@:@"))
 
@@ -219,15 +230,10 @@ class PreferencesWindowController(NSObject):
     def _populate_fields(self) -> None:
         cfg = self._config
 
-        self._controls["output_dir"].setStringValue_(
-            cfg.output_dir.replace(os.path.expanduser("~"), "~")
-        )
+        self._controls["output_dir"].setStringValue_(_collapse_home(cfg.output_dir))
 
-        fmt_popup = self._controls["export_format"]
-        fmt_popup.selectItemWithTitle_(cfg.export_format.upper())
-
-        sr_popup = self._controls["sample_rate"]
-        sr_popup.selectItemWithTitle_(str(cfg.sample_rate))
+        self._controls["export_format"].selectItemWithTitle_(cfg.export_format.upper())
+        self._controls["sample_rate"].selectItemWithTitle_(str(cfg.sample_rate))
 
         slider = self._controls["silence_threshold_db"]
         slider.setFloatValue_(cfg.silence_threshold_db)
@@ -247,20 +253,16 @@ class PreferencesWindowController(NSObject):
 
         self._controls["process_name"].setStringValue_(cfg.process_name)
 
-    # ── Control actions ───────────────────────────────────────────────────────
-
     def _slider_changed_(self, sender) -> None:
-        val = sender.floatValue()
         lbl = objc.getAssociated(sender, "label_ref")
         if lbl:
-            lbl.setStringValue_(f"{val:.0f} dB")
+            lbl.setStringValue_(f"{sender.floatValue():.0f} dB")
 
     def _stepper_changed_(self, sender) -> None:
         field = objc.getAssociated(sender, "field_ref")
         suffix = objc.getAssociated(sender, "suffix") or ""
         if field:
             val = sender.doubleValue()
-            # Show integer if value has no fractional part
             display = f"{val:.0f}{suffix}" if val == int(val) else f"{val}{suffix}"
             field.setStringValue_(display)
 
@@ -270,54 +272,45 @@ class PreferencesWindowController(NSObject):
         panel.setCanChooseDirectories_(True)
         panel.setAllowsMultipleSelection_(False)
         panel.setTitle_("Choose Output Folder")
-        if panel.runModal() == 1:  # NSModalResponseOK
+        if panel.runModal() == _ALERT_OK:
             url = panel.URL()
             if url:
-                path = url.path()
-                self._controls["output_dir"].setStringValue_(
-                    path.replace(os.path.expanduser("~"), "~")
-                )
+                self._controls["output_dir"].setStringValue_(_collapse_home(url.path()))
 
     def _save_clicked_(self, _sender) -> None:
         cfg = self._collect_fields()
         if cfg is None:
             return
 
-        # Validate output_dir
-        expanded = os.path.expanduser(cfg.output_dir)
+        expanded = _expand_path(cfg.output_dir)
         if not os.path.exists(expanded):
-            alert = NSAlert.alloc().init()
-            alert.setMessageText_("Folder does not exist")
-            alert.setInformativeText_(
-                f'"{expanded}" does not exist. Create it now?'
+            result = _alert_modal(
+                "Folder does not exist",
+                f'"{expanded}" does not exist. Create it now?',
+                "Create", "Cancel",
             )
-            alert.addButtonWithTitle_("Create")
-            alert.addButtonWithTitle_("Cancel")
-            if alert.runModal() == 1000:  # NSAlertFirstButtonReturn
+            if result == _ALERT_FIRST:
                 try:
                     os.makedirs(expanded, exist_ok=True)
                 except OSError as exc:
-                    self._show_error(f"Could not create folder: {exc}")
+                    _alert_modal("Cannot Create Folder", str(exc), "OK")
                     return
             else:
                 return
 
-        # Warn if MP3 and ffmpeg missing
-        if cfg.export_format.lower() == "mp3" and not shutil.which("ffmpeg"):
-            for path in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
-                if os.path.exists(path):
-                    break
-            else:
-                alert = NSAlert.alloc().init()
-                alert.setMessageText_("FFmpeg not found")
-                alert.setInformativeText_(
+        if cfg.export_format.lower() == "mp3":
+            ffmpeg_found = bool(shutil.which("ffmpeg")) or any(
+                os.path.exists(p)
+                for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
+            )
+            if not ffmpeg_found:
+                _alert_modal(
+                    "FFmpeg not found",
                     "FFmpeg is required for MP3 encoding but was not found. "
-                    "Install it with: brew install ffmpeg"
+                    "Install it with: brew install ffmpeg",
+                    "OK",
                 )
-                alert.addButtonWithTitle_("OK")
-                alert.runModal()
 
-        # Write config file
         config_path = platform_config_path()
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
         with open(config_path, "w") as f:
@@ -330,15 +323,11 @@ class PreferencesWindowController(NSObject):
         self._populate_fields()
         self._panel.orderOut_(None)
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
     @objc.python_method
     def _collect_fields(self) -> Config | None:
         cfg = Config()
 
-        cfg.output_dir = os.path.expanduser(
-            self._controls["output_dir"].stringValue()
-        )
+        cfg.output_dir = _expand_path(self._controls["output_dir"].stringValue())
 
         fmt = self._controls["export_format"].titleOfSelectedItem()
         cfg.export_format = fmt.lower() if fmt else "wav"
@@ -363,16 +352,8 @@ class PreferencesWindowController(NSObject):
 
         proc = self._controls["process_name"].stringValue().strip()
         if not proc or " " in proc:
-            self._show_error("Process name must be non-empty and contain no spaces.")
+            _alert_modal("Validation Error", "Process name must be non-empty and contain no spaces.", "OK")
             return None
         cfg.process_name = proc
 
         return cfg
-
-    @objc.python_method
-    def _show_error(self, message: str) -> None:
-        alert = NSAlert.alloc().init()
-        alert.setMessageText_("Validation Error")
-        alert.setInformativeText_(message)
-        alert.addButtonWithTitle_("OK")
-        alert.runModal()

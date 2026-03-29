@@ -28,14 +28,10 @@ class MenuBarApp(rumps.App):
         self._build_menu()
         self._apply_state(AppState.IDLE)
 
-        # 10 Hz timer drains events from the daemon background thread
         self._event_timer = rumps.Timer(self._drain_events, 0.1)
         self._event_timer.start()
 
-        # 1 Hz timer updates the recording duration label
         self._tick_timer = rumps.Timer(self._update_tick, 1.0)
-
-    # ── Menu construction ────────────────────────────────────────────────────
 
     def _build_menu(self) -> None:
         self._status_item = rumps.MenuItem("Idle \u2014 waiting for Rekordbox")
@@ -72,8 +68,6 @@ class MenuBarApp(rumps.App):
         ]
 
         self._refresh_launch_at_login()
-
-    # ── State machine ────────────────────────────────────────────────────────
 
     def _apply_state(self, state: AppState) -> None:
         if state == AppState.IDLE:
@@ -113,8 +107,6 @@ class MenuBarApp(rumps.App):
         except Exception:
             pass
 
-    # ── Timer helpers ────────────────────────────────────────────────────────
-
     def _start_tick(self) -> None:
         if not self._tick_running:
             self._tick_timer.start()
@@ -145,18 +137,16 @@ class MenuBarApp(rumps.App):
             return f"{h}:{m:02d}:{s:02d}"
         return f"{m}:{s:02d}"
 
-    # ── DaemonBridge callbacks (main thread) ──────────────────────────────────
-
     def _on_state_change(self, state: AppState) -> None:
         self._apply_state(state)
 
     def _on_segment_saved(self, path: str, duration: float) -> None:
-        filename = os.path.basename(path)
-        self._last_saved_item.title = f"Last saved: {filename}"
-        self._segments_item.title = f"Segments: {self._bridge.segment_count}"
+        # _apply_state(MONITORING) follows immediately via on_state_change and updates
+        # _segments_item, so we only need to update the fields it doesn't touch.
+        self._last_saved_item.title = f"Last saved: {os.path.basename(path)}"
         rumps.notification(
             "Recording Saved",
-            filename,
+            os.path.basename(path),
             f"Duration: {self._format_duration(timedelta(seconds=duration))}",
             sound=True,
         )
@@ -165,8 +155,6 @@ class MenuBarApp(rumps.App):
         truncated = (message[:57] + "\u2026") if len(message) > 60 else message
         self._status_item.title = f"Error: {truncated}"
         rumps.notification("auto-rb-recorder", "Error", truncated)
-
-    # ── Menu item callbacks ───────────────────────────────────────────────────
 
     def _open_recordings_folder(self, _) -> None:
         os.makedirs(self.config.output_dir, exist_ok=True)
@@ -221,8 +209,6 @@ class MenuBarApp(rumps.App):
                 return
         self._bridge.stop()
         rumps.quit_application()
-
-    # ── App lifecycle ─────────────────────────────────────────────────────────
 
     def run(self) -> None:
         self._bridge.start()

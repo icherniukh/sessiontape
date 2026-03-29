@@ -2,7 +2,6 @@ import logging
 import os
 import queue
 import signal
-from typing import Optional
 from typing import Callable, Optional
 
 import psutil
@@ -235,3 +234,9 @@ class RecorderDaemon:
             self._monitor.stop()
             self._export_manager.shutdown()
             log.info("Daemon exit.")
+
+    def shutdown(self) -> None:
+        try:
+            self._queue.put_nowait(ShutdownRequested())
+        except queue.Full:
+            pass

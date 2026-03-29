@@ -65,8 +65,7 @@ class DaemonBridge:
 
     def stop(self) -> None:
         if self._daemon:
-            self._daemon._running = False
-            self._daemon._on_rekordbox_stop()
+            self._daemon.shutdown()
 
     # ── Event draining (call on main thread via rumps.Timer) ─────────────────
 
@@ -101,6 +100,7 @@ class DaemonBridge:
     def _dispatch(self, event: str, payload) -> None:
         if event == "daemon_state":
             state_str, _info = payload
+            old_state = self._state
             if state_str == "monitoring":
                 self._state = AppState.MONITORING
                 self._session_start = None
@@ -108,7 +108,7 @@ class DaemonBridge:
             elif state_str == "idle":
                 self._state = AppState.IDLE
                 self._session_start = None
-            if self.on_state_change:
+            if self.on_state_change and self._state != old_state:
                 self.on_state_change(self._state)
 
         elif event == "capture_active":
