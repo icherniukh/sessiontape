@@ -45,7 +45,7 @@ class TestAudioCapture(unittest.TestCase):
                 self.assertEqual(os.path.basename(args[0]), "rb-capture-win.exe")
                 self.assertIn("--pid", args)
             else:
-                self.assertEqual(os.path.basename(args[0]), "audiotee")
+                self.assertEqual(os.path.basename(args[0]), "mac-capture")
             self.assertIn("12345", args)
 
             # Two threads are started: stderr logger + PCM reader

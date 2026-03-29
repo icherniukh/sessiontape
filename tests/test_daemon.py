@@ -63,8 +63,9 @@ class TestRecorderDaemon(unittest.TestCase):
         def side_effect_start(pid):
             daemon._current_pid = pid
         
-        def side_effect_stop():
-            daemon._current_pid = None
+        def side_effect_stop(keep_pid=False, **kwargs):
+            if not keep_pid:
+                daemon._current_pid = None
             daemon._capture = None
 
         daemon._start_capture = MagicMock(side_effect=side_effect_start)
@@ -74,7 +75,7 @@ class TestRecorderDaemon(unittest.TestCase):
 
         # Verify event processing
         self.assertEqual(daemon._start_capture.call_count, 3) # ProcessStarted, CaptureDied (restart), TapBroken (restart)
-        self.assertEqual(daemon._stop_capture.call_count, 3)  # CaptureDied (stop old), TapBroken (stop old), ProcessStopped
+        self.assertEqual(daemon._stop_capture.call_count, 4)  # CaptureDied (stop old), TapBroken (stop old), ProcessStopped, finally cleanup
         
         # Verify monitor lifecycle
         MockMonitor.return_value.start.assert_called_once()

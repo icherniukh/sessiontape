@@ -1,8 +1,10 @@
+import glob
 import logging
 import math
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import wave
@@ -20,8 +22,6 @@ def db_to_rms(db: float) -> float:
     # 0 dBFS = 32768 for 16-bit audio
     return 32768.0 * (10.0 ** (db / 20.0))
 
-
-import sys
 
 def _find_executable(name: str) -> str:
     if hasattr(sys, "_MEIPASS"):
@@ -159,6 +159,8 @@ class PCMStreamRecorder:
         self._last_rms: float = 0.0  # for drop detection
         self._consecutive_zero_chunks: int = 0  # perfect zeros = tap broken signal
 
+        self._tap_broken_fired: bool = False
+
         self._raw_path: Optional[str] = None
         self._output_path: Optional[str] = None
         self._raw_file = None
@@ -171,6 +173,7 @@ class PCMStreamRecorder:
         self.last_active_at = 0.0
         self._last_rms = 0.0
         self._consecutive_zero_chunks = 0
+        self._tap_broken_fired = False
 
     def process_chunk(self, chunk: bytes) -> None:
         rms = self._calculate_rms(chunk)
@@ -197,11 +200,12 @@ class PCMStreamRecorder:
         if rms == 0.0:
             self._consecutive_zero_chunks += 1
             # 900 chunks = 90s @ 100ms/chunk. This replaces the old watchdog timer.
-            if self._consecutive_zero_chunks == 900:
+            if self._consecutive_zero_chunks == 900 and not self._tap_broken_fired:
                 log.warning(
                     f"[DIAG] 900 consecutive all-zero chunks (90s) — "
                     f"tap definitely broken. Pushing TapBroken event."
                 )
+                self._tap_broken_fired = True
                 self.queue.put(TapBroken())
             elif self.state == "ACTIVE" and self._consecutive_zero_chunks in (10, 50, 150):
                 log.warning(
@@ -301,7 +305,6 @@ class PCMStreamRecorder:
         sum_squares = sum(sample * sample for sample in audio_samples)
         return math.sqrt(sum_squares / len(audio_samples))
 
-import glob
 
 def recover_orphaned_raw_files(output_dir: str, sample_rate: int, export_format: str) -> None:
     if not os.path.exists(output_dir):

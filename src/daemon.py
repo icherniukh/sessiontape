@@ -15,7 +15,7 @@ from src.recorder_core import recover_orphaned_raw_files
 
 log = logging.getLogger("rb-recorder")
 
-_STALE_PROCESS_NAMES = {"audiotee", "auto-rb-recorder"}
+_STALE_PROCESS_NAMES = {"audiotee", "mac-capture", "auto-rb-recorder"}
 
 
 def _cleanup_stale_processes() -> None:
@@ -33,10 +33,10 @@ def _cleanup_stale_processes() -> None:
 
 class RecorderDaemon:
     def __init__(self, config: Config):
-        _cleanup_stale_processes()
         self.config = config
         self._capture: Optional[AudioCapture] = None
         self._current_pid: Optional[int] = None
+        self._restart_count: int = 0
         self._queue: EventQueue = queue.Queue()
 
         self._monitor = ProcessMonitor(
@@ -78,19 +78,22 @@ class RecorderDaemon:
             self._current_pid = None
 
     def run(self):
+        _cleanup_stale_processes()
+
         # Register signal handlers to push ShutdownRequested to the queue
         def _on_signal(signum, frame):
             # Using put_nowait because signal handlers should be fast
             try:
                 self._queue.put_nowait(ShutdownRequested())
             except queue.Full:
+                # queue.Queue() is unbounded (maxsize=0); queue.Full is never raised, but kept as defensive code
                 pass
 
         signal.signal(signal.SIGTERM, _on_signal)
         signal.signal(signal.SIGINT, _on_signal)
 
         log.info(f"--- rb-recorder started · PID {os.getpid()} ---")
-        
+
         # Start the process monitor thread
         self._monitor.start()
 
@@ -99,24 +102,47 @@ class RecorderDaemon:
                 event = self._queue.get()
                 
                 if isinstance(event, ProcessStarted):
+                    self._restart_count = 0
                     self._start_capture(event.pid)
-                
+
                 elif isinstance(event, ProcessStopped):
-                    log.info("Rekordbox closed.")
-                    self._stop_capture()
-                
+                    if self._current_pid is None:
+                        log.warning("ProcessStopped received but no capture is active; ignoring.")
+                    else:
+                        log.info("Rekordbox closed.")
+                        self._stop_capture()
+
                 elif isinstance(event, CaptureDied):
                     if self._current_pid:
-                        log.warning(f"Capture helper died (exit code {event.exit_code}). Restarting capture.")
-                        self._stop_capture(keep_pid=True)
-                        # Rekordbox is likely still running if we haven't received ProcessStopped
-                        self._start_capture(self._current_pid)
-                
+                        if self._restart_count >= 5:
+                            log.critical(
+                                f"Capture helper died (exit code {event.exit_code}) and restart limit "
+                                f"({self._restart_count}) reached. Giving up."
+                            )
+                        else:
+                            self._restart_count += 1
+                            log.warning(
+                                f"Capture helper died (exit code {event.exit_code}). "
+                                f"Restarting capture (attempt {self._restart_count})."
+                            )
+                            self._stop_capture(keep_pid=True)
+                            # Rekordbox is likely still running if we haven't received ProcessStopped
+                            self._start_capture(self._current_pid)
+
                 elif isinstance(event, TapBroken):
                     if self._current_pid:
-                        log.warning("Watchdog: Tap broken (all zeros). Restarting capture for fresh tap.")
-                        self._stop_capture(keep_pid=True)
-                        self._start_capture(self._current_pid)
+                        if self._restart_count >= 5:
+                            log.critical(
+                                f"Tap broken and restart limit ({self._restart_count}) reached. Giving up."
+                            )
+                        else:
+                            self._restart_count += 1
+                            log.warning(
+                                f"Watchdog: Tap broken (all zeros). Restarting capture for fresh tap "
+                                f"(attempt {self._restart_count})."
+                            )
+                            self._stop_capture(keep_pid=True)
+                            self._start_capture(self._current_pid)
                 
                 elif isinstance(event, ShutdownRequested):
                     log.info("Shutdown requested.")

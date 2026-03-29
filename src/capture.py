@@ -10,7 +10,7 @@ from src.platform import get_platform_backend
 from src.recorder_core import PCMStreamRecorder
 
 log = logging.getLogger("rb-recorder")
-audiotee_log = logging.getLogger("rb-recorder.audiotee")
+audiotee_log = logging.getLogger("rb-recorder.capture")
 
 _AUDIOTEE_LEVEL_MAP = {
     "debug": logging.DEBUG,
@@ -125,7 +125,7 @@ class AudioCapture:
         self.is_recording = True
         self.recorder.reset()
         self._proc = self.backend.start(self.pid, self.sample_rate)
-        log.info(f"TRACING: Capture helper started (PID={self._proc.pid})")
+        log.info(f"Capture helper started (PID={self._proc.pid})")
 
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
