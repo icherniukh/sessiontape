@@ -71,5 +71,6 @@ class ProcessMonitor(threading.Thread):
                 # Process came back — update PID, don't fire stop
                 self._current_pid = pid
                 return
+            stopped_pid = self._current_pid
             self._current_pid = None
-            self.queue.put(ProcessStopped())
+            self.queue.put(ProcessStopped(pid=stopped_pid))

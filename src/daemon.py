@@ -108,6 +108,11 @@ class RecorderDaemon:
                 elif isinstance(event, ProcessStopped):
                     if self._current_pid is None:
                         log.warning("ProcessStopped received but no capture is active; ignoring.")
+                    elif event.pid != self._current_pid:
+                        log.warning(
+                            f"ProcessStopped PID {event.pid} does not match active PID "
+                            f"{self._current_pid}; ignoring stale event."
+                        )
                     else:
                         log.info("Rekordbox closed.")
                         self._stop_capture()

@@ -52,6 +52,7 @@ class TestProcessMonitor(unittest.TestCase):
         self.assertIsInstance(e1, ProcessStarted)
         e2 = q.get()
         self.assertIsInstance(e2, ProcessStopped)
+        self.assertEqual(e2.pid, 12345)
 
     @patch("src.process_monitor.time.sleep")
     @patch("src.process_monitor.ProcessMonitor._find_pid")

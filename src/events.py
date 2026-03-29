@@ -18,7 +18,7 @@ class ProcessStarted(Event):
 @dataclass
 class ProcessStopped(Event):
     """The target process has exited."""
-    pass
+    pid: int
 
 
 @dataclass

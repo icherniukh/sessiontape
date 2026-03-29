@@ -56,7 +56,7 @@ class TestRecorderDaemon(unittest.TestCase):
         daemon._queue.put(ProcessStarted(pid=12345))
         daemon._queue.put(CaptureDied(exit_code=1))
         daemon._queue.put(TapBroken())
-        daemon._queue.put(ProcessStopped())
+        daemon._queue.put(ProcessStopped(pid=12345))
         daemon._queue.put(ShutdownRequested())
 
         # Mock start/stop capture but ensure pid state is maintained

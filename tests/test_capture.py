@@ -29,7 +29,7 @@ class TestAudioCapture(unittest.TestCase):
         self.assertTrue(320 < rms < 330)
 
     @patch("src.capture.threading.Thread")
-    @patch("src.capture.subprocess.Popen")
+    @patch("src.backends.macos_capture.subprocess.Popen")
     def test_start_spawns_audiotee_and_thread(self, mock_popen, mock_thread):
         mock_proc = MagicMock()
         mock_popen.return_value = mock_proc
@@ -63,7 +63,7 @@ class TestAudioCapture(unittest.TestCase):
         self.assertFalse(cap.is_recording)
 
     @patch("src.capture.threading.Thread")
-    @patch("src.capture.subprocess.Popen")
+    @patch("src.backends.macos_capture.subprocess.Popen")
     def test_start_can_use_injected_backend(self, mock_popen, mock_thread):
         mock_proc = MagicMock()
         backend = StubBackend(mock_proc)
@@ -85,7 +85,7 @@ class TestAudioCapture(unittest.TestCase):
             self.assertIs(backend.stopped_proc, mock_proc)
 
     @patch("src.capture.threading.Thread")
-    @patch("src.capture.subprocess.Popen")
+    @patch("src.backends.macos_capture.subprocess.Popen")
     def test_stop_finalizes_recorder(self, mock_popen, mock_thread):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
@@ -103,7 +103,7 @@ class TestAudioCapture(unittest.TestCase):
             mock_proc.terminate.assert_called_once()
 
     @patch("src.capture.threading.Thread")
-    @patch("src.capture.subprocess.Popen")
+    @patch("src.backends.macos_capture.subprocess.Popen")
     def test_stop_skips_terminate_for_exited_process(self, mock_popen, mock_thread):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 0
