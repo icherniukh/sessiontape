@@ -92,6 +92,12 @@ class TestProcessMonitor(unittest.TestCase):
         self.assertIsInstance(q.get(), ProcessStarted)
         self.assertEqual(mon._current_pid, 67890)  # PID updated
 
+    def test_stop_sets_stop_event(self):
+        mon = ProcessMonitor(queue=queue.Queue(), process_name="test")
+        self.assertFalse(mon._stop_event.is_set())
+        mon.stop()
+        self.assertTrue(mon._stop_event.is_set())
+
 
 if __name__ == "__main__":
     unittest.main()

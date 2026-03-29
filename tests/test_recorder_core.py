@@ -64,5 +64,35 @@ class TestPCMStreamRecorder(unittest.TestCase):
             self.assertEqual(recorder.state, "PASSIVE")
 
 
+    def test_on_tap_broken_called_once_at_threshold(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_callback = MagicMock()
+            recorder = PCMStreamRecorder(
+                output_dir=tmpdir,
+                on_tap_broken=mock_callback,
+                sample_rate=48000,
+                silence_threshold_db=-50,
+                decay_tail=0,
+            )
+
+            # Transition to ACTIVE with one loud chunk
+            loud_chunk = b"\xFF\x7F" * (recorder.chunk_size // 2)
+            recorder.process_chunk(loud_chunk)
+            self.assertEqual(recorder.state, "ACTIVE")
+
+            # Feed 900 all-zero chunks — exactly at the threshold
+            zero_chunk = b"\x00" * recorder.chunk_size
+            for _ in range(900):
+                recorder.process_chunk(zero_chunk)
+
+            mock_callback.assert_called_once()
+
+            # Feed another zero chunk — callback must NOT fire again (deduplication)
+            recorder.process_chunk(zero_chunk)
+            mock_callback.assert_called_once()
+
+            recorder._raw_file.close() if recorder._raw_file else None
+
+
 if __name__ == "__main__":
     unittest.main()

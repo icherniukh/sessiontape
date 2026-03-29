@@ -39,7 +39,6 @@ class ProcessMonitor(threading.Thread):
         return None
 
     def run(self):
-        self._stop_event.clear()
         while not self._stop_event.is_set():
             self._poll_once()
             self._stop_event.wait(timeout=self.poll_interval)
