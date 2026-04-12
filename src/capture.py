@@ -5,9 +5,9 @@ import threading
 from typing import Optional
 
 from src.backends.base import CaptureBackend
-from src.events import CaptureDied, EventQueue, TapBroken
+from src.events import CaptureDied, Event, EventQueue, TapBroken
 from src.platform import get_platform_backend
-from src.recorder_core import PCMStreamRecorder
+from src.recorder_core import ExportManager, PCMStreamRecorder
 
 log = logging.getLogger("rb-recorder")
 audiotee_log = logging.getLogger("rb-recorder.capture")
@@ -31,9 +31,11 @@ class AudioCapture:
         source_name: str = "rekordbox",
         silence_threshold_db: float = -50.0,
         min_silence_duration: float = 15.0,
+        min_segment_duration: float = 10.0,
         decay_tail: float = 5.0,
         export_format: str = "wav",
         backend: CaptureBackend | None = None,
+        export_manager: ExportManager | None = None,
     ):
         self.pid = pid
         self.output_dir = output_dir
@@ -49,8 +51,11 @@ class AudioCapture:
             sample_rate=sample_rate,
             silence_threshold_db=silence_threshold_db,
             min_silence_duration=min_silence_duration,
+            min_segment_duration=min_segment_duration,
             decay_tail=decay_tail,
             export_format=export_format,
+            export_manager=export_manager,
+            event_sink=self._emit_event,
         )
 
         self._proc: Optional[subprocess.Popen] = None
@@ -60,6 +65,9 @@ class AudioCapture:
     @property
     def chunk_size(self) -> int:
         return self.recorder.chunk_size
+
+    def _emit_event(self, event: Event) -> None:
+        self.queue.put(event)
 
     def _read_loop(self) -> None:
         chunks_read = 0

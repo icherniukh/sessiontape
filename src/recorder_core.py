@@ -2,6 +2,7 @@ import glob
 import logging
 import math
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -10,8 +11,11 @@ import time
 import wave
 from array import array
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Optional
+
+from src.events import Event, ExportFailed, ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
 
 log = logging.getLogger("rb-recorder")
 
@@ -44,40 +48,99 @@ def _find_executable(name: str) -> str:
     return name
 
 
-class Exporter:
+@dataclass
+class _ExportJob:
+    raw_path: str
+    output_path: str
+    recovery: bool = False
+
+
+class ExportManager:
     def __init__(
         self,
         sample_rate: int,
         channels: int,
         bytes_per_sample: int,
         export_format: str,
+        event_sink: Optional[Callable[[Event], None]] = None,
     ):
         self.sample_rate = sample_rate
         self.channels = channels
         self.bytes_per_sample = bytes_per_sample
         self.export_format = export_format.lower()
+        self.event_sink = event_sink
+        self._jobs: queue.Queue[Optional[_ExportJob]] = queue.Queue()
+        self._worker: Optional[threading.Thread] = None
 
-    def export_async(self, raw_path: str, output_path: str) -> None:
-        thread = threading.Thread(
-            target=self._convert,
-            args=(raw_path, output_path),
-            daemon=True,
+    def start(self) -> None:
+        if self._worker and self._worker.is_alive():
+            return
+        self._worker = threading.Thread(
+            target=self._run,
+            name="ExportManager",
+            daemon=False,
         )
-        thread.start()
+        self._worker.start()
 
-    def _convert(self, raw_path: str, output_path: str) -> None:
+    def enqueue(self, raw_path: str, output_path: str, recovery: bool = False) -> None:
+        self.start()
+        self._jobs.put(_ExportJob(raw_path=raw_path, output_path=output_path, recovery=recovery))
+
+    def shutdown(self) -> None:
+        if not self._worker:
+            return
+        self._jobs.put(None)
+        self._worker.join()
+        self._worker = None
+
+    def _emit(self, event: Event) -> None:
+        if self.event_sink:
+            self.event_sink(event)
+
+    def _run(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                return
+            self._convert(job)
+
+    def _convert(self, job: _ExportJob) -> None:
+        raw_path = job.raw_path
+        output_path = job.output_path
         log.info(f"Converting {raw_path} to {output_path}")
+        self._emit(
+            ExportStarted(
+                raw_path=raw_path,
+                output_path=output_path,
+                recovery=job.recovery,
+            )
+        )
         try:
             if self.export_format == "mp3":
                 self._convert_mp3(raw_path, output_path)
             else:
                 self._convert_wav(raw_path, output_path)
-        except Exception:
+        except Exception as exc:
             log.exception(f"Failed conversion for {raw_path}")
+            self._emit(
+                ExportFailed(
+                    raw_path=raw_path,
+                    output_path=output_path,
+                    error=str(exc),
+                    recovery=job.recovery,
+                )
+            )
             return
 
         os.unlink(raw_path)
         log.info(f"Finished conversion: {output_path}")
+        self._emit(
+            ExportFinished(
+                raw_path=raw_path,
+                output_path=output_path,
+                recovery=job.recovery,
+            )
+        )
 
     def _convert_wav(self, raw_path: str, output_path: str) -> None:
         with open(raw_path, "rb") as raw_file, wave.open(output_path, "wb") as wav_file:
@@ -120,13 +183,18 @@ class PCMStreamRecorder:
         sample_rate: int = 48000,
         silence_threshold_db: float = -50.0,
         min_silence_duration: float = 15.0,
+        min_segment_duration: float = 10.0,
         decay_tail: float = 5.0,
         export_format: str = "wav",
+        export_manager: Optional[ExportManager] = None,
+        event_sink: Optional[Callable[[Event], None]] = None,
     ):
         self.output_dir = os.path.abspath(os.path.expanduser(output_dir))
         self.on_tap_broken = on_tap_broken
         self.sample_rate = sample_rate
+        self.min_segment_duration = min_segment_duration
         self.export_format = export_format.lower()
+        self.event_sink = event_sink
 
         self.chunk_duration = 0.1  # 100ms chunks
         self.channels = 2
@@ -142,7 +210,7 @@ class PCMStreamRecorder:
         self.silence_chunks_threshold = int(min_silence_duration / self.chunk_duration)
         self.buffer_maxlen = int(decay_tail / self.chunk_duration)
 
-        self.exporter = Exporter(
+        self.export_manager = export_manager or ExportManager(
             sample_rate=self.sample_rate,
             channels=self.channels,
             bytes_per_sample=self.bytes_per_sample,
@@ -172,6 +240,10 @@ class PCMStreamRecorder:
         self._last_rms = 0.0
         self._consecutive_zero_chunks = 0
         self._tap_broken_fired = False
+
+    def _emit(self, event: Event) -> None:
+        if self.event_sink:
+            self.event_sink(event)
 
     def process_chunk(self, chunk: bytes) -> None:
         rms = self._calculate_rms(chunk)
@@ -272,6 +344,9 @@ class PCMStreamRecorder:
         )
         self._raw_file = open(self._raw_path, "wb")
         log.info(f"Opened new recording session: {self._raw_path}")
+        self._emit(
+            SegmentOpened(raw_path=self._raw_path, output_path=self._output_path)
+        )
 
     def _close_current_file(self) -> None:
         if self._raw_file:
@@ -288,10 +363,37 @@ class PCMStreamRecorder:
             self.sample_rate * self.channels * self.bytes_per_sample
         )
         log.info(f"Raw capture finished: {raw_size} bytes ({duration:.1f}s)")
+        output_path = self._output_path
 
         if raw_size > 0:
-            self.exporter.export_async(self._raw_path, self._output_path)
+            discarded = duration < self.min_segment_duration
+            self._emit(
+                SegmentClosed(
+                    raw_path=self._raw_path,
+                    output_path=output_path,
+                    duration_seconds=duration,
+                    discarded=discarded,
+                )
+            )
+            if discarded:
+                log.info(
+                    "Discarding short segment %.1fs < %.1fs: %s",
+                    duration,
+                    self.min_segment_duration,
+                    self._raw_path,
+                )
+                os.unlink(self._raw_path)
+            else:
+                self.export_manager.enqueue(self._raw_path, output_path)
         else:
+            self._emit(
+                SegmentClosed(
+                    raw_path=self._raw_path,
+                    output_path=output_path,
+                    duration_seconds=duration,
+                    discarded=True,
+                )
+            )
             os.unlink(self._raw_path)
 
         self._raw_path = None
@@ -305,7 +407,12 @@ class PCMStreamRecorder:
         return math.sqrt(sum_squares / len(audio_samples))
 
 
-def recover_orphaned_raw_files(output_dir: str, sample_rate: int, export_format: str) -> None:
+def recover_orphaned_raw_files(
+    output_dir: str,
+    sample_rate: int,
+    export_format: str,
+    export_manager: Optional[ExportManager] = None,
+) -> None:
     if not os.path.exists(output_dir):
         return
 
@@ -319,7 +426,7 @@ def recover_orphaned_raw_files(output_dir: str, sample_rate: int, export_format:
         return
 
     log.info(f"Found {len(raw_files)} orphaned raw files. Starting recovery...")
-    exporter = Exporter(
+    exporter = export_manager or ExportManager(
         sample_rate=sample_rate,
         channels=2,
         bytes_per_sample=2,
@@ -345,4 +452,7 @@ def recover_orphaned_raw_files(output_dir: str, sample_rate: int, export_format:
             
         output_path = os.path.join(output_dir, f"{base}.{export_format}")
         log.info(f"Recovering {raw_path} to {output_path}")
-        exporter.export_async(raw_path, output_path)
+        exporter.enqueue(raw_path, output_path, recovery=True)
+
+    if export_manager is None:
+        exporter.shutdown()

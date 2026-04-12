@@ -1,12 +1,11 @@
 import logging
 import os
 import threading
-import time
 from typing import Optional
 
 import psutil
 
-from src.events import EventQueue, ProcessStarted, ProcessStopped
+from src.events import EventQueue, ProcessReplaced, ProcessStarted, ProcessStopped
 
 log = logging.getLogger("rb-recorder")
 
@@ -23,20 +22,27 @@ class ProcessMonitor(threading.Thread):
         self._current_pid: Optional[int] = None
         self._stop_event = threading.Event()
 
-    def _find_pid(self) -> Optional[int]:
+    def _find_matching_pids(self) -> list[int]:
         target = self.process_name.lower()
         target_stem = os.path.splitext(target)[0]
-        for proc in psutil.process_iter(["pid", "name"]):
+        matches: list[tuple[float, int]] = []
+        for proc in psutil.process_iter(["pid", "name", "create_time"]):
             try:
                 name = proc.info.get("name")
                 if not name:
                     continue
                 normalized = name.lower()
                 if normalized == target or os.path.splitext(normalized)[0] == target_stem:
-                    return proc.info["pid"]
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    create_time = proc.info.get("create_time") or 0.0
+                    matches.append((create_time, proc.info["pid"]))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
-        return None
+        matches.sort()
+        return [pid for _, pid in matches]
+
+    def _find_pid(self) -> Optional[int]:
+        matches = self._find_matching_pids()
+        return matches[0] if matches else None
 
     def run(self):
         while not self._stop_event.is_set():
@@ -47,7 +53,8 @@ class ProcessMonitor(threading.Thread):
         self._stop_event.set()
 
     def _poll_once(self):
-        pid = self._find_pid()
+        matching_pids = self._find_matching_pids()
+        pid = matching_pids[0] if matching_pids else None
         was_running = self._current_pid is not None
         is_running = pid is not None
 
@@ -56,19 +63,39 @@ class ProcessMonitor(threading.Thread):
             # Wait for startup to settle (Rekordbox spawns multiple
             # short-lived processes during launch), then re-check
             self._stop_event.wait(timeout=self.startup_delay)
-            pid = self._find_pid()
-            if pid is None:
+            matching_pids = self._find_matching_pids()
+            if not matching_pids:
                 return  # Transient process — ignore
+            pid = matching_pids[0]
             self._current_pid = pid
             self.queue.put(ProcessStarted(pid=pid))
+        elif is_running and was_running and self._current_pid not in matching_pids:
+            old_pid = self._current_pid
+            log.info(
+                "Process PID changed from %s to %s. Waiting %.1fs to settle...",
+                old_pid,
+                pid,
+                self.stop_delay,
+            )
+            self._stop_event.wait(timeout=self.stop_delay)
+            matching_pids = self._find_matching_pids()
+            if not matching_pids:
+                self._current_pid = None
+                self.queue.put(ProcessStopped(pid=old_pid))
+                return
+            if old_pid in matching_pids:
+                return
+            new_pid = matching_pids[0]
+            self._current_pid = new_pid
+            self.queue.put(ProcessReplaced(old_pid=old_pid, new_pid=new_pid))
         elif not is_running and was_running:
             # Debounce stop: Rekordbox briefly disappears between
             # process restarts during startup. Wait and re-check.
             self._stop_event.wait(timeout=self.stop_delay)
-            pid = self._find_pid()
-            if pid is not None:
+            matching_pids = self._find_matching_pids()
+            if matching_pids:
                 # Process came back — update PID, don't fire stop
-                self._current_pid = pid
+                self._current_pid = matching_pids[0]
                 return
             stopped_pid = self._current_pid
             self._current_pid = None

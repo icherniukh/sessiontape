@@ -68,6 +68,7 @@ class TestAudioCaptureIntegration(unittest.TestCase):
                     output_dir=tmpdir,
                     sample_rate=48000,
                     min_silence_duration=0.2,
+                    min_segment_duration=0.0,
                     decay_tail=0.0,
                     export_format="wav",
                 )
@@ -93,6 +94,7 @@ class TestAudioCaptureIntegration(unittest.TestCase):
                     output_dir=tmpdir,
                     sample_rate=48000,
                     min_silence_duration=0.2,
+                    min_segment_duration=0.0,
                     decay_tail=0.2,
                     export_format="wav",
                 )
