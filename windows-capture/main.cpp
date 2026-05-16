@@ -177,6 +177,9 @@ int main(int argc, char** argv) {
     std::cerr << "Capture started successfully.\n";
 
     UINT32 packetLength = 0;
+    std::vector<short> pcmData;
+    std::vector<short> silence;
+
     while (true) {
         // Sleep for roughly half the buffer duration to avoid busy waiting
         Sleep(20); 
@@ -201,12 +204,12 @@ int main(int argc, char** argv) {
 
             DWORD nChannels = wfex.Format.nChannels;
             if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
-                std::vector<short> silence(numFramesAvailable * nChannels, 0);
+                silence.assign(numFramesAvailable * nChannels, 0);
                 fwrite(silence.data(), sizeof(short), silence.size(), stdout);
             } else {
                 // Format is always float32 (we set it above)
                 float* pFloatData = (float*)pData;
-                std::vector<short> pcmData(numFramesAvailable * nChannels);
+                pcmData.resize(numFramesAvailable * nChannels);
                 for (UINT32 i = 0; i < numFramesAvailable * nChannels; ++i) {
                     float sample = pFloatData[i];
                     if (sample > 1.0f) sample = 1.0f;
