@@ -38,3 +38,7 @@ build/
 # uv lockfile (no dependencies, not useful to track)
 uv.lock
 .dmux/
+
+# Local Worktrees & Builds
+.worktrees/
+mac-capture/.build/
