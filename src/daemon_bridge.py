@@ -66,6 +66,8 @@ class DaemonBridge:
     def stop(self) -> None:
         if self._daemon:
             self._daemon.shutdown()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5.0)
 
     # ── Event draining (call on main thread via rumps.Timer) ─────────────────
 

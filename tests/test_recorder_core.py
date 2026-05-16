@@ -68,7 +68,8 @@ class TestPCMStreamRecorder(unittest.TestCase):
 
             recorder.finalize()
 
-            export_manager.enqueue.assert_called_once_with(raw_path, output_path)
+            from unittest.mock import ANY
+            export_manager.enqueue.assert_called_once_with(raw_path, output_path, duration_seconds=ANY)
             self.assertEqual(recorder.state, "PASSIVE")
 
     def test_finalize_discards_short_segment_below_min_duration(self):

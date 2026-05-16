@@ -52,6 +52,7 @@ def _find_executable(name: str) -> str:
 class _ExportJob:
     raw_path: str
     output_path: str
+    duration_seconds: float = 0.0
     recovery: bool = False
 
 
@@ -82,9 +83,9 @@ class ExportManager:
         )
         self._worker.start()
 
-    def enqueue(self, raw_path: str, output_path: str, recovery: bool = False) -> None:
+    def enqueue(self, raw_path: str, output_path: str, duration_seconds: float = 0.0, recovery: bool = False) -> None:
         self.start()
-        self._jobs.put(_ExportJob(raw_path=raw_path, output_path=output_path, recovery=recovery))
+        self._jobs.put(_ExportJob(raw_path=raw_path, output_path=output_path, duration_seconds=duration_seconds, recovery=recovery))
 
     def shutdown(self) -> None:
         if not self._worker:
@@ -112,6 +113,7 @@ class ExportManager:
             ExportStarted(
                 raw_path=raw_path,
                 output_path=output_path,
+                duration_seconds=job.duration_seconds,
                 recovery=job.recovery,
             )
         )
@@ -127,6 +129,7 @@ class ExportManager:
                     raw_path=raw_path,
                     output_path=output_path,
                     error=str(exc),
+                    duration_seconds=job.duration_seconds,
                     recovery=job.recovery,
                 )
             )
@@ -138,6 +141,7 @@ class ExportManager:
             ExportFinished(
                 raw_path=raw_path,
                 output_path=output_path,
+                duration_seconds=job.duration_seconds,
                 recovery=job.recovery,
             )
         )
@@ -384,7 +388,7 @@ class PCMStreamRecorder:
                 )
                 os.unlink(self._raw_path)
             else:
-                self.export_manager.enqueue(self._raw_path, output_path)
+                self.export_manager.enqueue(self._raw_path, output_path, duration_seconds=duration)
         else:
             self._emit(
                 SegmentClosed(
@@ -452,7 +456,10 @@ def recover_orphaned_raw_files(
             
         output_path = os.path.join(output_dir, f"{base}.{export_format}")
         log.info(f"Recovering {raw_path} to {output_path}")
-        exporter.enqueue(raw_path, output_path, recovery=True)
+        
+        # Calculate duration assuming 2 channels and 16-bit audio
+        duration = size / (sample_rate * 2 * 2)
+        exporter.enqueue(raw_path, output_path, duration_seconds=duration, recovery=True)
 
     if export_manager is None:
         exporter.shutdown()

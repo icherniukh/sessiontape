@@ -67,6 +67,7 @@ class ExportStarted(Event):
     """An export job has started converting a raw segment."""
     raw_path: str
     output_path: str
+    duration_seconds: float = 0.0
     recovery: bool = False
 
 
@@ -75,6 +76,7 @@ class ExportFinished(Event):
     """An export job completed successfully."""
     raw_path: str
     output_path: str
+    duration_seconds: float = 0.0
     recovery: bool = False
 
 
@@ -84,6 +86,7 @@ class ExportFailed(Event):
     raw_path: str
     output_path: str
     error: str
+    duration_seconds: float = 0.0
     recovery: bool = False
 
 

@@ -84,8 +84,6 @@ class RecorderDaemon:
             export_format=self.config.export_format,
             export_manager=self._export_manager,
         )
-        self._capture.recorder.on_active = self.on_capture_active
-        self._capture.recorder.on_segment_saved = self.on_segment_saved
         self._capture.start()
         if self.on_state_change:
             self.on_state_change("monitoring", {"pid": pid})
@@ -203,6 +201,8 @@ class RecorderDaemon:
 
                 elif isinstance(event, SegmentOpened):
                     log.info(f"Segment opened: {event.raw_path}")
+                    if self.on_capture_active:
+                        self.on_capture_active()
 
                 elif isinstance(event, SegmentClosed):
                     if event.discarded:
@@ -225,6 +225,8 @@ class RecorderDaemon:
                 elif isinstance(event, ExportFinished):
                     phase = "Recovery export" if event.recovery else "Export"
                     log.info(f"{phase} finished: {event.output_path}")
+                    if self.on_segment_saved:
+                        self.on_segment_saved(event.output_path, event.duration_seconds)
 
                 elif isinstance(event, ExportFailed):
                     phase = "Recovery export" if event.recovery else "Export"

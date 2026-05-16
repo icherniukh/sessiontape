@@ -75,6 +75,7 @@ class TestAudioCaptureIntegration(unittest.TestCase):
                 cap.start()
                 wait_until(lambda: cap._proc is not None and cap._proc.poll() is not None)
                 cap.stop()
+                cap.recorder.export_manager.shutdown()
 
             wait_until(lambda: len(list(Path(tmpdir).glob("rb_session_*.wav"))) == 2)
             wav_paths = sorted(Path(tmpdir).glob("rb_session_*.wav"))
@@ -101,6 +102,7 @@ class TestAudioCaptureIntegration(unittest.TestCase):
                 cap.start()
                 wait_until(lambda: cap._proc is not None and cap._proc.poll() is not None)
                 cap.stop()
+                cap.recorder.export_manager.shutdown()
 
             wait_until(lambda: len(list(Path(tmpdir).glob("rb_session_*.wav"))) == 1)
             wav_paths = list(Path(tmpdir).glob("rb_session_*.wav"))
