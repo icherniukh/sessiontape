@@ -1,6 +1,8 @@
 import logging
 import subprocess
 import os
+import signal
+import sys
 
 from src.backends.base import CaptureBackend
 from src.recorder_core import _find_executable
@@ -13,15 +15,28 @@ class WindowsCaptureBackend(CaptureBackend):
         exe = _find_executable("rb-capture-win.exe")
         cmd = [exe, "--pid", str(pid), "--sample-rate", str(sample_rate)]
         log.info(f"Launching capture helper: {' '.join(cmd)}")
+        
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            
         return subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **kwargs
         )
 
     def stop(self, proc: subprocess.Popen) -> None:
         if proc.poll() is None:
-            proc.terminate()
+            if sys.platform == "win32":
+                try:
+                    os.kill(proc.pid, signal.CTRL_C_EVENT)
+                except OSError:
+                    proc.terminate()
+            else:
+                proc.terminate()
+                
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
