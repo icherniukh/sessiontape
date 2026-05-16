@@ -3,6 +3,7 @@
 
 [recording]
 sample_rate = 48000
+capture_backend = "auto"            # macOS: "auto" -> mac-capture, or set "audiotee"
 output_dir = "~/Music/auto-rb-recorder"
 export_format = "wav"  # allow "wav" or "mp3"
 

@@ -49,6 +49,7 @@ def resolve_config_path(explicit_path: str | None = None) -> str:
 @dataclass
 class Config:
     sample_rate: int = 48000
+    capture_backend: str = "auto"
     output_dir: str = field(
         default_factory=default_output_dir
     )
@@ -72,6 +73,8 @@ class Config:
 
         if "sample_rate" in rec:
             cfg.sample_rate = rec["sample_rate"]
+        if "capture_backend" in rec:
+            cfg.capture_backend = rec["capture_backend"]
         if "output_dir" in rec:
             cfg.output_dir = os.path.expanduser(rec["output_dir"])
         if "export_format" in rec:

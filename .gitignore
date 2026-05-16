@@ -37,3 +37,4 @@ build/
 
 # uv lockfile (no dependencies, not useful to track)
 uv.lock
+.dmux/

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import os
 
 from src.capture import AudioCapture
+from src.backends.macos_capture import AudioteeCaptureBackend
 from src.recorder_core import db_to_rms
 
 
@@ -83,6 +84,21 @@ class TestAudioCapture(unittest.TestCase):
             self.assertEqual(backend.started_with, (12345, 44100))
             cap.stop()
             self.assertIs(backend.stopped_proc, mock_proc)
+
+    @patch("src.backends.macos_capture.subprocess.Popen")
+    def test_audiotee_backend_uses_expected_command(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_popen.return_value = mock_proc
+
+        backend = AudioteeCaptureBackend()
+        backend.start(12345, 44100)
+
+        args = mock_popen.call_args[0][0]
+        self.assertEqual(os.path.basename(args[0]), "audiotee")
+        self.assertEqual(
+            args[1:],
+            ["--include-processes", "12345", "--sample-rate", "44100", "--stereo"],
+        )
 
     @patch("src.capture.threading.Thread")
     @patch("src.backends.macos_capture.subprocess.Popen")

@@ -71,6 +71,7 @@ class RecorderDaemon:
             output_dir=self.config.output_dir,
             queue=self._queue,
             sample_rate=self.config.sample_rate,
+            backend_name=self.config.capture_backend,
             silence_threshold_db=self.config.silence_threshold_db,
             min_silence_duration=self.config.min_silence_duration,
             min_segment_duration=self.config.min_segment_duration,

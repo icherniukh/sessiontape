@@ -22,6 +22,7 @@ class TestRecorderDaemon(unittest.TestCase):
             output_dir="/tmp/test_output", 
             queue=daemon._queue,
             sample_rate=48000,
+            backend_name="auto",
             silence_threshold_db=-50,
             min_silence_duration=15,
             min_segment_duration=10,

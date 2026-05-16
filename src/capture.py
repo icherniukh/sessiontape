@@ -35,6 +35,7 @@ class AudioCapture:
         decay_tail: float = 5.0,
         export_format: str = "wav",
         backend: CaptureBackend | None = None,
+        backend_name: str | None = None,
         export_manager: ExportManager | None = None,
     ):
         self.pid = pid
@@ -43,7 +44,7 @@ class AudioCapture:
         self.sample_rate = sample_rate
         self.source_name = source_name
         self.is_recording = False
-        self.backend = backend or get_platform_backend()
+        self.backend = backend or get_platform_backend(backend_name)
 
         self.recorder = PCMStreamRecorder(
             output_dir=output_dir,

@@ -115,6 +115,7 @@ Config file locations:
 ```toml
 [recording]
 sample_rate = 48000                      # must match system audio output rate
+capture_backend = "auto"                 # macOS: "auto" -> mac-capture, or "audiotee"
 output_dir = "~/Music/auto-rb-recorder"
 export_format = "wav"                    # "wav" or "mp3" (mp3 requires ffmpeg)
 
@@ -126,6 +127,13 @@ decay_tail = 5                          # seconds of pre-sound buffer kept at se
 [monitor]
 process_name = "rekordbox"
 poll_interval = 2.0
+```
+
+For quick backend switching during macOS debugging, you can also override the config with:
+
+```bash
+RB_CAPTURE_BACKEND=mac-capture auto-rb-recorder
+RB_CAPTURE_BACKEND=audiotee auto-rb-recorder
 ```
 
 ---
