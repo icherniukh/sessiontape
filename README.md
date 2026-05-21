@@ -10,14 +10,22 @@ Background daemon that automatically records Pioneer Rekordbox DJ sets by captur
 
 ## Windows Installation
 
-### Requirements
+### Using the Installer (Recommended)
+
+1. Download the latest `auto-rb-recorder-setup.exe` from the [Releases](https://github.com/icherniukh/auto-rb-recorder/releases) page.
+2. Run the installer. It will install the application and configure it to automatically run as a background service when you log in.
+3. _(Optional)_ If you want to export recordings as MP3 instead of WAV, ensure `ffmpeg` is installed and available on your system `PATH`.
+
+### From Source (For Developers)
+
+#### Requirements
 
 - Windows 10 Build 19041+ (WASAPI process loopback)
 - Python 3.11+
 - Visual Studio 2019+ with **Desktop development with C++** workload
 - _(optional)_ `ffmpeg` on PATH for MP3 export
 
-### 1. Clone
+#### 1. Clone
 
 ```powershell
 git clone https://github.com/icherniukh/auto-rb-recorder.git

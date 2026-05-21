@@ -96,3 +96,45 @@ jobs:
           download-url: https://github.com/icherniukh/auto-rb-recorder/releases/download/${{ github.ref_name }}/auto-rb-recorder-macos-universal.zip
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  build_windows_release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          uv venv
+          .venv\Scripts\activate
+          uv pip install pyinstaller
+
+      - name: Build Executable
+        run: |
+          .venv\Scripts\activate
+          powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
+
+      - name: Compile Inno Setup Installer
+        run: |
+          iscc scripts\installer.iss
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2.6.1
+        with:
+          files: dist/auto-rb-recorder-setup.exe
+          generate_release_notes: true
