@@ -35,7 +35,7 @@ Produces `windows-capture\rb-capture-win.exe`. The script will locate MSVC autom
 ### 3. Install the Python package
 
 ```powershell
-pip install -e .
+uv pip install -e .
 ```
 
 ### 4. Place the capture helper on PATH
@@ -66,7 +66,7 @@ auto-rb-recorder -v     # verbose
 Requires a standalone exe built with PyInstaller:
 
 ```powershell
-pip install pyinstaller
+uv pip install pyinstaller
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
 powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 ```
@@ -144,7 +144,7 @@ RB_CAPTURE_BACKEND=audiotee auto-rb-recorder
 ```bash
 git clone --recurse-submodules https://github.com/icherniukh/auto-rb-recorder.git
 cd auto-rb-recorder
-pip install pyinstaller
+uv pip install pyinstaller
 bash scripts/build.sh
 # → dist/auto-rb-recorder
 ```
@@ -153,7 +153,7 @@ bash scripts/build.sh
 ```powershell
 git clone https://github.com/icherniukh/auto-rb-recorder.git
 cd auto-rb-recorder
-pip install pyinstaller
+uv pip install pyinstaller
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
 # → dist\auto-rb-recorder.exe
 ```
@@ -163,7 +163,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
 ## Testing
 
 ```bash
-pip install pytest
+uv pip install pytest
 pytest tests/ -v
 ```
 
