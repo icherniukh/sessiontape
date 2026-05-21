@@ -163,6 +163,35 @@ class TestPCMStreamRecorder(unittest.TestCase):
             self.assertIsInstance(events[0], ExportStarted)
             self.assertIsInstance(events[1], ExportFinished)
 
+    def test_last_active_at_updates_on_non_silent_chunk(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = PCMStreamRecorder(
+                output_dir=tmpdir,
+                on_tap_broken=lambda: None,
+                sample_rate=48000,
+                silence_threshold_db=-50,
+                decay_tail=0,
+            )
+
+            with patch("src.recorder_core.time.time") as mock_time:
+                # Transition PASSIVE -> ACTIVE
+                mock_time.return_value = 100.0
+                loud_chunk = b"\xFF\x7F" * 10
+                recorder.process_chunk(loud_chunk)
+
+                self.assertEqual(recorder.state, "ACTIVE")
+                self.assertEqual(recorder.last_active_at, 100.0)
+
+                # Process another loud chunk in ACTIVE state
+                mock_time.return_value = 105.0
+                recorder.process_chunk(loud_chunk)
+
+                self.assertEqual(recorder.state, "ACTIVE")
+                self.assertEqual(recorder.last_active_at, 105.0)
+
+            if recorder._raw_file:
+                recorder._raw_file.close()
 
 if __name__ == "__main__":
     unittest.main()
