@@ -18,7 +18,7 @@ class WindowsCaptureBackend(CaptureBackend):
         
         kwargs = {}
         if sys.platform == "win32":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
             
         return subprocess.Popen(
             cmd,

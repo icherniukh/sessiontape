@@ -168,7 +168,12 @@ class ExportManager:
             "320k",
             output_path,
         ]
-        result = subprocess.run(cmd, capture_output=True)
+        
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            
+        result = subprocess.run(cmd, capture_output=True, **kwargs)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.decode(errors="ignore").strip())
 
