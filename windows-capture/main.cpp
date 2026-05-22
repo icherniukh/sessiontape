@@ -32,6 +32,11 @@ typedef struct AUDIOCLIENT_ACTIVATION_PARAMS {
 #include <fcntl.h>
 #include <vector>
 #include <string>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <atomic>
 
 using namespace Microsoft::WRL;
 
@@ -67,6 +72,51 @@ void PrintHelp() {
     std::cerr << "Usage: rb-capture-win.exe --pid <PID> [--sample-rate <RATE>]\n";
 }
 
+// Global state for IPC writer thread
+std::queue<std::vector<short>> audioQueue;
+std::mutex queueMutex;
+std::condition_variable queueCV;
+std::atomic<bool> isRunning{true};
+const size_t MAX_QUEUE_CHUNKS = 5000; // ~100 seconds of audio to prevent OOM
+
+void WriterThread() {
+    while (true) {
+        std::vector<short> chunk;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            queueCV.wait(lock, [] { return !audioQueue.empty() || !isRunning; });
+            
+            if (!isRunning && audioQueue.empty()) break;
+            if (audioQueue.empty()) continue;
+            
+            chunk = std::move(audioQueue.front());
+            audioQueue.pop();
+        }
+        
+        size_t written = 0;
+        size_t total = chunk.size();
+        int retries = 0;
+        
+        while (written < total && retries < 5) {
+            size_t w = fwrite(chunk.data() + written, sizeof(short), total - written, stdout);
+            if (w == 0) {
+                // If the OS pipe buffer is completely full, fwrite may return 0 or block.
+                // In a non-blocking context or partial write error, we retry.
+                Sleep(10);
+                retries++;
+                continue;
+            }
+            written += w;
+            retries = 0;
+        }
+        
+        // We let the OS buffer standard stdout, but we flush explicitly 
+        // to push data down the pipe. Since this thread is completely 
+        // decoupled from the audio thread, blocking on fflush is safe here!
+        fflush(stdout);
+    }
+}
+
 int main(int argc, char** argv) {
     DWORD targetPid = 0;
     DWORD targetSampleRate = 48000;
@@ -85,8 +135,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Set stdout to binary mode
+    // Set stdout to binary mode.
+    // Use default _IOFBF since we explicitly fflush in the writer thread.
     _setmode(_fileno(stdout), _O_BINARY);
+    char stdoutBuffer[65536];
+    setvbuf(stdout, stdoutBuffer, _IOFBF, sizeof(stdoutBuffer));
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
@@ -131,8 +184,6 @@ int main(int argc, char** argv) {
 
     ComPtr<IAudioClient> pAudioClient = handler->m_AudioClient;
 
-    // Process loopback virtual devices don't support GetMixFormat.
-    // Build a float32 stereo format at the requested sample rate directly.
     WAVEFORMATEXTENSIBLE wfex = {};
     wfex.Format.wFormatTag      = WAVE_FORMAT_EXTENSIBLE;
     wfex.Format.nChannels       = 2;
@@ -144,8 +195,6 @@ int main(int argc, char** argv) {
     wfex.Samples.wValidBitsPerSample = 32;
     wfex.dwChannelMask          = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
     wfex.SubFormat              = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
-
-    bool isFloat = true;
 
     hr = pAudioClient->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
@@ -175,18 +224,15 @@ int main(int argc, char** argv) {
     }
 
     std::cerr << "Capture started successfully.\n";
+    
+    // Start dedicated writer thread
+    std::thread writer(WriterThread);
 
     UINT32 packetLength = 0;
     std::vector<short> pcmData;
     std::vector<short> silence;
 
-    // Set up a larger stdout buffer to prevent IPC stuttering
-    char stdoutBuffer[65536];
-    setvbuf(stdout, stdoutBuffer, _IOFBF, sizeof(stdoutBuffer));
-
-    int flushCounter = 0;
-
-    while (true) {
+    while (isRunning) {
         // Sleep for roughly half the buffer duration to avoid busy waiting
         Sleep(20); 
 
@@ -211,9 +257,10 @@ int main(int argc, char** argv) {
             DWORD nChannels = wfex.Format.nChannels;
             if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
                 silence.assign(numFramesAvailable * nChannels, 0);
-                fwrite(silence.data(), sizeof(short), silence.size(), stdout);
+                std::lock_guard<std::mutex> lock(queueMutex);
+                if (audioQueue.size() >= MAX_QUEUE_CHUNKS) audioQueue.pop();
+                audioQueue.push(silence);
             } else {
-                // Format is always float32 (we set it above)
                 float* pFloatData = (float*)pData;
                 pcmData.resize(numFramesAvailable * nChannels);
                 for (UINT32 i = 0; i < numFramesAvailable * nChannels; ++i) {
@@ -222,11 +269,12 @@ int main(int argc, char** argv) {
                     if (sample < -1.0f) sample = -1.0f;
                     pcmData[i] = (short)(sample * 32767.0f);
                 }
-                fwrite(pcmData.data(), sizeof(short), pcmData.size(), stdout);
+                std::lock_guard<std::mutex> lock(queueMutex);
+                if (audioQueue.size() >= MAX_QUEUE_CHUNKS) audioQueue.pop();
+                audioQueue.push(pcmData);
             }
-
-            // Let the standard C runtime handle flushing automatically
-            // based on the 64KB _IOFBF buffer we configured via setvbuf.
+            
+            queueCV.notify_one();
 
             hr = pCaptureClient->ReleaseBuffer(numFramesAvailable);
             if (FAILED(hr)) break;
@@ -234,6 +282,12 @@ int main(int argc, char** argv) {
             hr = pCaptureClient->GetNextPacketSize(&packetLength);
             if (FAILED(hr)) break;
         }
+    }
+
+    isRunning = false;
+    queueCV.notify_one();
+    if (writer.joinable()) {
+        writer.join();
     }
 
     pAudioClient->Stop();
