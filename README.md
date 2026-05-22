@@ -10,13 +10,25 @@ Background daemon that automatically records Pioneer Rekordbox DJ sets by captur
 
 ## Windows Installation
 
-### Using the Installer (Recommended)
+### Using PowerShell (Recommended - Bypasses SmartScreen)
+
+The easiest way to install is via PowerShell. This method downloads and launches the installer directly, bypassing the "Windows protected your PC" SmartScreen warning that occurs with manual browser downloads.
+
+Open PowerShell and paste this command:
+
+```powershell
+$exe = "$env:TEMP\auto-rb-recorder-setup.exe"; curl.exe -sL "https://github.com/icherniukh/auto-rb-recorder/releases/latest/download/auto-rb-recorder-setup.exe" -o $exe; if ($?) { Start-Process $exe }
+```
+
+The installer will place the application in your `AppData` and configure it to automatically run as a background service when you log in.
+
+### Manual Download
 
 1. Download the latest `auto-rb-recorder-setup.exe` from the [Releases](https://github.com/icherniukh/auto-rb-recorder/releases) page.
 2. Run the installer. 
-   > **Note:** Windows SmartScreen may flag the installer as "Windows protected your PC" because it is not signed with an EV certificate. Click **More info** -> **Run anyway** to proceed.
-3. The installer will place the application in your `AppData` and configure it to automatically run as a background service when you log in.
-4. _(Optional)_ If you want to export recordings as MP3 instead of WAV, ensure `ffmpeg` is installed and available on your system `PATH`.
+   > **Note:** Windows SmartScreen may flag the installer as "Windows protected your PC" because it is an unsigned executable. Click **More info** -> **Run anyway** to proceed.
+
+_(Optional)_ If you want to export recordings as MP3 instead of WAV, ensure `ffmpeg` is installed and available on your system `PATH`.
 
 ### From Source (For Developers)
 
