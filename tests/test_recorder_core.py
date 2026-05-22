@@ -1,7 +1,7 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.events import ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
 from src.recorder_core import ExportManager, PCMStreamRecorder
@@ -50,6 +50,24 @@ class TestPCMStreamRecorder(unittest.TestCase):
             self.assertTrue(recorder._output_path.endswith(".mp3"))
             self.assertTrue(recorder._raw_path.endswith(".raw"))
             recorder._raw_file.close()
+
+    @patch("src.recorder_core.subprocess.run")
+    @patch("src.recorder_core._find_executable", return_value="ffmpeg")
+    def test_mp3_export_suppresses_window(self, mock_find, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        manager = ExportManager(
+            sample_rate=48000,
+            channels=2,
+            bytes_per_sample=2,
+            export_format="mp3",
+        )
+        manager._convert_mp3("in.raw", "out.mp3")
+
+        import sys
+        import subprocess
+        args, kwargs = mock_run.call_args
+        if sys.platform == "win32":
+            self.assertEqual(kwargs.get("creationflags"), getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
 
     def test_finalize_exports_active_session(self):
         with tempfile.TemporaryDirectory() as tmpdir:

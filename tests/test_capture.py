@@ -31,15 +31,21 @@ class TestAudioCapture(unittest.TestCase):
 
     @patch("src.capture.threading.Thread")
     @patch("src.backends.macos_capture.subprocess.Popen")
-    def test_start_spawns_audiotee_and_thread(self, mock_popen, mock_thread):
+    def test_capture_lifecycle(self, mock_popen, mock_thread):
         mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
         mock_popen.return_value = mock_proc
 
         with tempfile.TemporaryDirectory() as tmpdir:
             q = queue.Queue()
+            
+            # 1. Stop without start is no-op
             cap = AudioCapture(pid=12345, output_dir=tmpdir, queue=q, sample_rate=48000)
-            cap.start()
+            cap.stop()
+            self.assertFalse(cap.is_recording)
 
+            # 2. Start spawns backend and threads
+            cap.start()
             mock_popen.assert_called_once()
             args = mock_popen.call_args[0][0]
             if sys.platform == "win32":
@@ -52,16 +58,22 @@ class TestAudioCapture(unittest.TestCase):
             # Two threads are started: stderr logger + PCM reader
             self.assertEqual(mock_thread.call_count, 2)
             self.assertEqual(mock_thread.return_value.start.call_count, 2)
-
             self.assertTrue(cap.is_recording)
             self.assertEqual(cap.recorder.state, "PASSIVE")
-            cap.stop()
 
-    def test_stop_without_start_is_noop(self):
-        q = queue.Queue()
-        cap = AudioCapture(pid=12345, output_dir="/tmp", queue=q, sample_rate=48000)
-        cap.stop()
-        self.assertFalse(cap.is_recording)
+            # 3. Stop finalizes recorder and terminates process
+            cap.recorder.finalize = MagicMock()
+            cap.stop()
+            cap.recorder.finalize.assert_called_once()
+            mock_proc.terminate.assert_called_once()
+            self.assertFalse(cap.is_recording)
+
+            # 4. Stop skips terminate if process already exited
+            mock_proc.reset_mock()
+            mock_proc.poll.return_value = 0
+            cap.start()
+            cap.stop()
+            mock_proc.terminate.assert_not_called()
 
     @patch("src.capture.threading.Thread")
     @patch("src.backends.macos_capture.subprocess.Popen")
@@ -100,38 +112,24 @@ class TestAudioCapture(unittest.TestCase):
             ["--include-processes", "12345", "--sample-rate", "44100", "--stereo"],
         )
 
-    @patch("src.capture.threading.Thread")
-    @patch("src.backends.macos_capture.subprocess.Popen")
-    def test_stop_finalizes_recorder(self, mock_popen, mock_thread):
+    @patch("src.backends.windows_capture.subprocess.Popen")
+    def test_windows_backend_suppresses_window(self, mock_popen):
+        from src.backends.windows_capture import WindowsCaptureBackend
+        import subprocess
+
         mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
         mock_popen.return_value = mock_proc
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            q = queue.Queue()
-            cap = AudioCapture(pid=12345, output_dir=tmpdir, queue=q)
-            cap.start()
-            cap.recorder.finalize = MagicMock()
+        backend = WindowsCaptureBackend()
+        backend.start(12345, 48000)
 
-            cap.stop()
+        args, kwargs = mock_popen.call_args
+        self.assertEqual(os.path.basename(args[0][0]), "rb-capture-win.exe")
+        self.assertEqual(args[0][1:], ["--pid", "12345", "--sample-rate", "48000"])
 
-            cap.recorder.finalize.assert_called_once()
-            mock_proc.terminate.assert_called_once()
-
-    @patch("src.capture.threading.Thread")
-    @patch("src.backends.macos_capture.subprocess.Popen")
-    def test_stop_skips_terminate_for_exited_process(self, mock_popen, mock_thread):
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0
-        mock_popen.return_value = mock_proc
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            q = queue.Queue()
-            cap = AudioCapture(pid=12345, output_dir=tmpdir, queue=q)
-            cap.start()
-            cap.stop()
-
-            mock_proc.terminate.assert_not_called()
+        if sys.platform == "win32":
+            expected_flags = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            self.assertEqual(kwargs.get("creationflags"), expected_flags)
 
 
 if __name__ == "__main__":
