@@ -1,10 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 
+import sys
+
+if sys.platform == 'win32':
+    binaries = [('windows-capture\\rb-capture-win.exe', '.')]
+elif sys.platform == 'darwin':
+    binaries = [('mac-capture/.build/release/mac-capture', '.')]
+else:
+    binaries = []
+
 a = Analysis(
-    ['src/__main__.py'],
+    ['src\\__main__.py'],
     pathex=[],
-    binaries=[('/Users/ivan/proj/auto-rb-recorder/mac-capture/.build/release/mac-capture', '.')],
+    binaries=binaries,
     datas=[],
     hiddenimports=['src.config', 'src.capture', 'src.daemon', 'src.process_monitor', 'src.recorder_core'],
     hookspath=[],
