@@ -180,6 +180,12 @@ int main(int argc, char** argv) {
     std::vector<short> pcmData;
     std::vector<short> silence;
 
+    // Set up a larger stdout buffer to prevent IPC stuttering
+    char stdoutBuffer[65536];
+    setvbuf(stdout, stdoutBuffer, _IOFBF, sizeof(stdoutBuffer));
+
+    int flushCounter = 0;
+
     while (true) {
         // Sleep for roughly half the buffer duration to avoid busy waiting
         Sleep(20); 
@@ -219,7 +225,8 @@ int main(int argc, char** argv) {
                 fwrite(pcmData.data(), sizeof(short), pcmData.size(), stdout);
             }
 
-            fflush(stdout);
+            // Let the standard C runtime handle flushing automatically
+            // based on the 64KB _IOFBF buffer we configured via setvbuf.
 
             hr = pCaptureClient->ReleaseBuffer(numFramesAvailable);
             if (FAILED(hr)) break;
