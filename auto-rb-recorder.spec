@@ -31,7 +31,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='rb-recorder-bin',
+    name='auto-rb-recorder',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

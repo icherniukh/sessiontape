@@ -17,7 +17,7 @@ The easiest way to install is via PowerShell. This method downloads and launches
 Open PowerShell and paste this command:
 
 ```powershell
-$exe = "$env:TEMP\auto-rb-recorder-setup.exe"; curl.exe -sfL "https://github.com/icherniukh/auto-rb-recorder/releases/latest/download/auto-rb-recorder-setup.exe" -o $exe; if ($?) { Start-Process $exe }
+$exe = "$env:TEMP\auto-rb-recorder-setup.exe"; curl.exe -sfL "https://github.com/icherniukh/auto-rb-recorder/releases/latest/download/auto-rb-recorder-setup.exe" -o $exe; if ($?) { Start-Process $exe -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES' -Wait }
 ```
 
 The installer will place the application in your `AppData` and configure it to automatically run as a background service when you log in.
