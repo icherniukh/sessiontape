@@ -42,7 +42,7 @@ jobs:
       - name: Build Executable
         run: |
           source .venv/bin/activate
-          bash scripts/build.sh
+          bash scripts/build.sh --full
 
       - name: Code Sign Binary
         run: |
