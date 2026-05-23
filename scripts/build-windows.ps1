@@ -17,7 +17,7 @@ if (Test-Path $CaptureExe) {
 
 Write-Host "Building standalone executable..."
 if (Test-Path "dist") { Remove-Item -Path "dist" -Recurse -Force }
-uv run pyinstaller "$ProjectRoot\auto-rb-recorder.spec" --clean --noconfirm
+uv run pyinstaller "$ProjectRoot\auto-rb-recorder.spec" --distpath "$ProjectRoot\dist" --workpath "$ProjectRoot\build" --clean --noconfirm
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
 $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
