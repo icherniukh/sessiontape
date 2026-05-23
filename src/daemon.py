@@ -21,7 +21,7 @@ _STALE_PROCESS_NAMES = {"mac-capture", "auto-rb-recorder"}
 
 
 def _cleanup_stale_processes() -> None:
-    """Kill any leftover audiotee or auto-rb-recorder processes from a previous run."""
+    """Kill any leftover mac-capture or auto-rb-recorder processes from a previous run."""
     current_pid = os.getpid()
     own_pids = {current_pid, os.getppid()}
     for proc in psutil.process_iter(["pid", "name"]):

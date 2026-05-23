@@ -45,7 +45,7 @@ class TestConfig(unittest.TestCase):
         toml_content = (
             '[recording]\n'
             'sample_rate = 44100\n'
-            'capture_backend = "audiotee"\n'
+            'capture_backend = "mac-capture"\n'
             'output_dir = "/tmp/my_sets"\n'
             '\n'
             '[trigger]\n'
@@ -59,7 +59,7 @@ class TestConfig(unittest.TestCase):
 
         os.unlink(f.name)
         self.assertEqual(cfg.sample_rate, 44100)
-        self.assertEqual(cfg.capture_backend, "audiotee")
+        self.assertEqual(cfg.capture_backend, "mac-capture")
         self.assertEqual(cfg.output_dir, "/tmp/my_sets")
         self.assertEqual(cfg.silence_threshold_db, -40)
         self.assertEqual(cfg.min_silence_duration, 20)

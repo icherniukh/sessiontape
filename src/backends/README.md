@@ -7,7 +7,7 @@ This directory contains the platform-specific audio capture backends for `auto-r
 The recorder relies on a platform-neutral core (`PCMStreamRecorder`) and delegates the actual raw PCM audio acquisition to platform-specific backends.
 
 * `base.py`: Defines the `CaptureBackend` protocol.
-* `macos_capture.py`: macOS backends for both `mac-capture` and `audiotee`.
+* `macos_capture.py`: macOS backend using `mac-capture` (native Swift CoreAudio process tap).
 * `windows_capture.py`: Windows backend utilizing `rb-capture-win.exe` (a native Windows WASAPI loopback capture helper) via a subprocess.
 
 ## Windows Design Notes
@@ -15,16 +15,6 @@ The recorder relies on a platform-neutral core (`PCMStreamRecorder`) and delegat
 The Windows implementation avoids doing heavy Windows COM/WASAPI audio API calls directly in Python to maintain low overhead in the hot path. Instead, it relies on a small native helper executable `rb-capture-win.exe` which performs process-level loopback capture and streams raw PCM (s16le) to stdout.
 
 Python remains responsible for orchestration, silence detection, ring buffering, and export.
-
-## macOS Backend Selection
-
-On macOS, `auto-rb-recorder` can run either backend:
-
-* `mac-capture` — the current default
-* `audiotee` — preserved for comparison and fallback testing
-
-Selection can be made through config (`recording.capture_backend`) or the
-`RB_CAPTURE_BACKEND` environment variable.
 
 ## Testing on Windows
 

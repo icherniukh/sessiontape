@@ -8,7 +8,7 @@ The recorder uses a platform-neutral core with platform-specific capture backend
 - `src/recorder_core.py` — PCM chunk processing, silence-based splitting, raw session writing, and export.
 - `src/process_monitor.py` — Rekordbox process detection with debounce logic.
 - `src/backends/base.py` — `CaptureBackend` protocol that all platform backends implement.
-- `src/backends/macos_capture.py` — macOS backend using `audiotee` (bundled as a submodule).
+- `src/backends/macos_capture.py` — macOS backend using `mac-capture` (native Swift CoreAudio process tap).
 - `src/backends/windows_capture.py` — Windows backend using `rb-capture-win.exe` (native WASAPI loopback helper).
 
 WAV export is written directly from PCM data. MP3 export shells out to `ffmpeg`.
@@ -16,7 +16,7 @@ WAV export is written directly from PCM data. MP3 export shells out to `ffmpeg`.
 ## Development setup
 
 ```bash
-git clone --recurse-submodules https://github.com/icherniukh/auto-rb-recorder.git
+git clone https://github.com/icherniukh/auto-rb-recorder.git
 cd auto-rb-recorder
 uv sync
 ```
@@ -31,4 +31,4 @@ The test suite includes a subprocess-driven integration harness that feeds deter
 
 ## Configuration
 
-Default settings live in `config.default.toml`. At runtime the recorder loads user overrides from `~/.config/rb-recorder/config.toml`.
+Default settings live in `config.default.toml`. At runtime the recorder loads user overrides from `%APPDATA%\rb-recorder\config.toml` (Windows) or `~/Library/Application Support/rb-recorder/config.toml` (macOS).

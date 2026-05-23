@@ -30,7 +30,7 @@ class ProcessReplaced(Event):
 
 @dataclass
 class CaptureDied(Event):
-    """The capture backend process (e.g. audiotee) died unexpectedly."""
+    """The capture backend process (e.g. mac-capture) died unexpectedly."""
     exit_code: Optional[int]
 
 
