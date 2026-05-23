@@ -215,6 +215,7 @@ class PCMStreamRecorder:
         self.silence_chunks_threshold = int(min_silence_duration / self.chunk_duration)
         self.buffer_maxlen = int(decay_tail / self.chunk_duration)
 
+        self._owns_export_manager = export_manager is None
         self.export_manager = export_manager or ExportManager(
             sample_rate=self.sample_rate,
             channels=self.channels,
@@ -339,6 +340,8 @@ class PCMStreamRecorder:
         if self.state == "ACTIVE":
             self._close_current_file()
             self.state = "PASSIVE"
+        if self._owns_export_manager:
+            self.export_manager.shutdown()
 
     def _open_new_file(self) -> None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")

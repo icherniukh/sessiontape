@@ -17,7 +17,7 @@ from src.recorder_core import ExportManager, recover_orphaned_raw_files
 
 log = logging.getLogger("rb-recorder")
 
-_STALE_PROCESS_NAMES = {"audiotee", "mac-capture", "auto-rb-recorder"}
+_STALE_PROCESS_NAMES = {"mac-capture", "auto-rb-recorder"}
 
 
 def _cleanup_stale_processes() -> None:

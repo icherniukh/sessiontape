@@ -1,4 +1,3 @@
-import json
 import logging
 import subprocess
 import threading
@@ -10,13 +9,7 @@ from src.platform import get_platform_backend
 from src.recorder_core import ExportManager, PCMStreamRecorder
 
 log = logging.getLogger("rb-recorder")
-audiotee_log = logging.getLogger("rb-recorder.capture")
-
-_AUDIOTEE_LEVEL_MAP = {
-    "debug": logging.DEBUG,
-    "info": logging.INFO,
-    "error": logging.ERROR,
-}
+capture_log = logging.getLogger("rb-recorder.capture")
 
 
 class AudioCapture:
@@ -100,32 +93,14 @@ class AudioCapture:
             if not line:
                 continue
             decoded = line.decode(errors="replace") if isinstance(line, bytes) else line
-            
-            # Try to parse audiotee JSON
-            try:
-                msg = json.loads(decoded)
-                msg_type = msg.get("message_type", "info")
-                data = msg.get("data") or {}
-                text = data.get("message", "")
-                context = data.get("context")
-                if context:
-                    ctx_str = " ".join(f"{k}={v}" for k, v in context.items())
-                    text = f"{text} [{ctx_str}]"
-                level = _AUDIOTEE_LEVEL_MAP.get(msg_type, logging.INFO)
-                audiotee_log.log(level, "%s", text)
-                continue
-            except (json.JSONDecodeError, AttributeError, KeyError):
-                pass
-            
-            # Parse mac-capture plain text logs
             if decoded.startswith("INFO: "):
-                audiotee_log.info(decoded[6:])
+                capture_log.info(decoded[6:])
             elif decoded.startswith("ERROR: "):
-                audiotee_log.error(decoded[7:])
+                capture_log.error(decoded[7:])
             elif decoded.startswith("DEBUG: "):
-                audiotee_log.debug(decoded[7:])
+                capture_log.debug(decoded[7:])
             else:
-                audiotee_log.info(decoded)
+                capture_log.info(decoded)
 
     def start(self) -> None:
         if self.is_recording:

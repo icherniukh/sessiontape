@@ -1,9 +1,9 @@
 # config.default.toml — Rekordbox Auto-Recorder defaults
-# Copy to ~/.config/rb-recorder/config.toml to customize.
+# Windows: copy to %APPDATA%\rb-recorder\config.toml
+# macOS:   copy to ~/Library/Application Support/rb-recorder/config.toml
 
 [recording]
 sample_rate = 48000
-capture_backend = "auto"            # macOS: "auto" -> mac-capture, or set "audiotee"
 output_dir = "~/Music/auto-rb-recorder"
 export_format = "wav"  # allow "wav" or "mp3"
 

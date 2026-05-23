@@ -11,7 +11,7 @@ else:
     binaries = []
 
 a = Analysis(
-    ['src\\__main__.py'],
+    ['src/__main__.py'],
     pathex=[],
     binaries=binaries,
     datas=[],

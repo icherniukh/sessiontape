@@ -97,21 +97,6 @@ class TestAudioCapture(unittest.TestCase):
             cap.stop()
             self.assertIs(backend.stopped_proc, mock_proc)
 
-    # @patch("src.backends.macos_capture.subprocess.Popen")
-    # def test_audiotee_backend_uses_expected_command(self, mock_popen):
-    #     mock_proc = MagicMock()
-    #     mock_popen.return_value = mock_proc
-    # 
-    #     backend = AudioteeCaptureBackend()
-    #     backend.start(12345, 44100)
-    # 
-    #     args = mock_popen.call_args[0][0]
-    #     self.assertEqual(os.path.basename(args[0]), "audiotee")
-    #     self.assertEqual(
-    #         args[1:],
-    #         ["--include-processes", "12345", "--sample-rate", "44100", "--stereo"],
-    #     )
-
     @patch("src.backends.windows_capture.subprocess.Popen")
     def test_windows_backend_suppresses_window(self, mock_popen):
         from src.backends.windows_capture import WindowsCaptureBackend

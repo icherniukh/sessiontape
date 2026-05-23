@@ -8,6 +8,7 @@ on:
 jobs:
   build_release:
     runs-on: macos-latest
+    timeout-minutes: 10
     permissions:
       contents: write
 
@@ -53,9 +54,6 @@ jobs:
       - name: Package Release
         run: |
           mkdir -p release_package
-          # PyInstaller outputs to dist/auto-rb-recorder/auto-rb-recorder
-          # but since we are using --onefile it should be dist/auto-rb-recorder
-          # Let's use a wildcard to be safe or just be explicit.
           cp dist/auto-rb-recorder release_package/
           cp config.default.toml release_package/
           cd release_package
@@ -79,6 +77,7 @@ jobs:
 
   build_windows_release:
     runs-on: windows-latest
+    timeout-minutes: 10
     permissions:
       contents: write
 
@@ -113,4 +112,3 @@ jobs:
         uses: softprops/action-gh-release@v2.6.1
         with:
           files: dist/auto-rb-recorder-setup.exe
-          generate_release_notes: true

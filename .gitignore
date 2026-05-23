@@ -42,3 +42,7 @@ uv.lock
 # Local Worktrees & Builds
 .worktrees/
 mac-capture/.build/
+windows-capture/*.obj
+windows-capture/rb-capture-win.exe
+
+gha-creds-*.json
