@@ -27,6 +27,7 @@ def _make_capture(tmpdir, q, **kwargs):
                     [sys.executable, FAKE_WINDOWS_CAPTURE, "--pid", str(pid), "--sample-rate", str(sample_rate)],
                     stdout=_sp.PIPE,
                     stderr=_sp.DEVNULL,
+                    creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0x08000000),
                 )
 
         return AudioCapture(queue=q, backend=FakeWindowsBackend(), **kwargs)

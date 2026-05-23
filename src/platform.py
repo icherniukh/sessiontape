@@ -14,11 +14,11 @@ def get_platform_backend(backend_name: str | None = None) -> CaptureBackend:
         from src.backends.windows_capture import WindowsCaptureBackend
         return WindowsCaptureBackend()
     elif sys.platform == "darwin":
-        from src.backends.macos_capture import AudioteeCaptureBackend, MacCaptureBackend
+        from src.backends.macos_capture import MacCaptureBackend # , AudioteeCaptureBackend
         if selected in {"auto", "mac-capture"}:
             return MacCaptureBackend()
-        if selected == "audiotee":
-            return AudioteeCaptureBackend()
+        # if selected == "audiotee":
+        #     return AudioteeCaptureBackend()
         raise ValueError(f"Unsupported capture backend {selected!r} on macOS")
     else:
         raise NotImplementedError(f"Platform {sys.platform} is not supported")
