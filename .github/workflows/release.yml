@@ -46,12 +46,6 @@ jobs:
 
       - name: Code Sign Binary
         run: |
-          # --options runtime: Hardened Runtime (required for notarization)
-          # --timestamp: required for notarization
-          # --entitlements: disable-library-validation allows PyInstaller's bundled
-          #   Python.framework (signed by PSF, different Team ID) to load at runtime
-          # Note: --deep is intentionally omitted — it is for .app bundles, not
-          #   --onefile binaries, and causes signing issues here
           xcrun codesign --force --options runtime --timestamp \
             --entitlements entitlements.plist \
             --sign "Developer ID Application" dist/auto-rb-recorder
@@ -62,24 +56,7 @@ jobs:
           cp dist/auto-rb-recorder release_package/
           cp config.default.toml release_package/
           cd release_package
-          # Apple Notary tool heavily prefers structural zips over tar.gz payloads
           zip -r ../auto-rb-recorder-macos-universal.zip *
-
-      - name: Notarize Release
-        env:
-          NOTARIZATION_KEY_P8: ${{ secrets.NOTARIZATION_KEY_P8 }}
-          NOTARIZATION_KEY_ID: ${{ secrets.NOTARIZATION_KEY_ID }}
-          NOTARIZATION_ISSUER_ID: ${{ secrets.NOTARIZATION_ISSUER_ID }}
-        run: |
-          # Save the P8 key to a temporary file
-          AUTH_KEY_PATH=$RUNNER_TEMP/AuthKey_${NOTARIZATION_KEY_ID}.p8
-          echo "$NOTARIZATION_KEY_P8" > $AUTH_KEY_PATH
-
-          xcrun notarytool submit auto-rb-recorder-macos-universal.zip \
-            --key "$AUTH_KEY_PATH" \
-            --key-id "$NOTARIZATION_KEY_ID" \
-            --issuer "$NOTARIZATION_ISSUER_ID" \
-            --wait
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2.6.1
@@ -124,14 +101,10 @@ jobs:
           .venv\Scripts\activate
           uv pip install pyinstaller
 
-      - name: Build Executable
+      - name: Build and Package
         run: |
           .venv\Scripts\activate
           powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
-
-      - name: Compile Inno Setup Installer
-        run: |
-          iscc scripts\installer.iss
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2.6.1

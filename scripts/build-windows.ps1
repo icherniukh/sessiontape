@@ -11,6 +11,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Building standalone executable for Windows..."
+if (Test-Path "dist") { Remove-Item -Path "dist" -Recurse -Force }
 uv run pyinstaller auto-rb-recorder.spec --clean --noconfirm
 
-Write-Host "Build complete. Executable is at dist\auto-rb-recorder.exe"
+if (Get-Command iscc -ErrorAction SilentlyContinue) {
+    Write-Host "Inno Setup found. Building installer..."
+    iscc scripts\installer.iss
+} else {
+    Write-Warning "iscc not found. Skipping installer build."
+}
+
+Write-Host "Build complete. Output is in dist\"

@@ -42,16 +42,7 @@ elif [[ ! -f "$MACCAPTURE_BIN" ]]; then
 fi
 
 echo "Building standalone executable..."
-uv run pyinstaller --name=auto-rb-recorder \
-            --onedir \
-            --clean \
-            --noconfirm \
-            --add-binary "$MACCAPTURE_BIN:." \
-            --hidden-import=src.config \
-            --hidden-import=src.capture \
-            --hidden-import=src.daemon \
-            --hidden-import=src.process_monitor \
-            --hidden-import=src.recorder_core \
-            src/__main__.py
+rm -rf dist/
+uv run pyinstaller auto-rb-recorder.spec --clean --noconfirm
 
-echo "Build complete. Executable is at dist/auto-rb-recorder/auto-rb-recorder (mac-capture bundled)"
+echo "Build complete. Executable is at dist/auto-rb-recorder"
