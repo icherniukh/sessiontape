@@ -6,7 +6,8 @@
 - **LaunchAgent** — `install/com.rb-recorder.plist` and `scripts/install.sh` exist but haven't been tested with actual login-time auto-start.
 - **Crash recovery** — if Rekordbox crashes mid-recording, the raw file persists but the WAV conversion + split won't run until the daemon's next cycle. No automatic recovery of orphaned `.raw` files.
 - **Long session stability** — not tested with multi-hour DJ sets. Disk space usage is ~184KB/s (660MB/hour).
-- **audiotee stability** — the user noted audiotee "is not stable nowadays." No issues observed during short tests but long sessions may reveal problems.
+- **audiotee stability** — audiotee support is currently **commented out** (disabled) in `src/platform.py` and `src/backends/macos_capture.py` because it is considered unstable. Use `mac-capture` for macOS instead.
+- **Terminal popups during tests** — Even with `CREATE_NO_WINDOW` flags, the test suite occasionally spawns empty terminal windows on Windows. Tracked in [Issue #21](https://github.com/icherniukh/auto-rb-recorder/issues/21).
 - **Permissions UX** — Screen Recording permission must be granted manually. No guided setup flow.
 
 ## Planned Work: audiotee Upstream PR Readiness
