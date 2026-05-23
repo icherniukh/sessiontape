@@ -83,22 +83,6 @@ auto-rb-recorder        # foreground
 auto-rb-recorder -v     # verbose
 ```
 
-### 7. Auto-start at login (optional)
-
-Requires a standalone exe built with PyInstaller:
-
-```powershell
-uv pip install pyinstaller
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
-powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
-```
-
-To uninstall:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\uninstall-windows.ps1
-```
-
 ---
 
 ## macOS Installation
@@ -137,7 +121,7 @@ Config file locations:
 ```toml
 [recording]
 sample_rate = 48000                      # must match system audio output rate
-capture_backend = "auto"                 # macOS: "auto" -> mac-capture, or "audiotee"
+capture_backend = "auto"                 # macOS: "auto" -> mac-capture
 output_dir = "~/Music/auto-rb-recorder"
 export_format = "wav"                    # "wav" or "mp3" (mp3 requires ffmpeg)
 
@@ -155,7 +139,6 @@ For quick backend switching during macOS debugging, you can also override the co
 
 ```bash
 RB_CAPTURE_BACKEND=mac-capture auto-rb-recorder
-RB_CAPTURE_BACKEND=audiotee auto-rb-recorder
 ```
 
 ---
