@@ -60,14 +60,7 @@ Produces `windows-capture\rb-capture-win.exe`. The script will locate MSVC autom
 uv pip install -e .
 ```
 
-### 4. Place the capture helper on PATH
-
-```powershell
-$scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
-Copy-Item windows-capture\rb-capture-win.exe $scripts
-```
-
-### 5. Create config
+### 4. Create config
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:APPDATA\rb-recorder"
@@ -76,7 +69,7 @@ Copy-Item config.default.toml "$env:APPDATA\rb-recorder\config.toml"
 
 Edit `%APPDATA%\rb-recorder\config.toml` as needed (see [Configuration](#configuration)).
 
-### 6. Run
+### 5. Run
 
 ```powershell
 auto-rb-recorder        # foreground
@@ -121,7 +114,6 @@ Config file locations:
 ```toml
 [recording]
 sample_rate = 48000                      # must match system audio output rate
-capture_backend = "auto"                 # macOS: "auto" -> mac-capture
 output_dir = "~/Music/auto-rb-recorder"
 export_format = "wav"                    # "wav" or "mp3" (mp3 requires ffmpeg)
 
@@ -143,15 +135,15 @@ RB_CAPTURE_BACKEND=mac-capture auto-rb-recorder
 
 ---
 
-## Building a standalone executable from source
+## Building standalone from source
 
 **macOS**
 ```bash
 git clone --recurse-submodules https://github.com/icherniukh/auto-rb-recorder.git
 cd auto-rb-recorder
 uv pip install pyinstaller
-bash scripts/build.sh
-# → dist/auto-rb-recorder
+bash scripts/build.sh --full
+# → dist/auto-rb-recorder (onefile)
 ```
 
 **Windows**
@@ -160,7 +152,7 @@ git clone https://github.com/icherniukh/auto-rb-recorder.git
 cd auto-rb-recorder
 uv pip install pyinstaller
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
-# → dist\auto-rb-recorder.exe
+# → dist\auto-rb-recorder-setup.exe
 ```
 
 ---
