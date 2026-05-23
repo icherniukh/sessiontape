@@ -39,6 +39,7 @@ def _make_capture(tmpdir, q, **kwargs):
             [sys.executable, FAKE_AUDIOTEE, "--include-processes", str(pid), "--sample-rate", str(sr)],
             stdout=_sp.PIPE,
             stderr=_sp.PIPE,
+            creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0x08000000),
         )
         return AudioCapture(queue=q, backend=mock_backend, **kwargs)
 

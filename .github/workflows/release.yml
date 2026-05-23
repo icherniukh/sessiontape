@@ -48,12 +48,12 @@ jobs:
         run: |
           xcrun codesign --force --options runtime --timestamp \
             --entitlements entitlements.plist \
-            --sign "Developer ID Application" dist/auto-rb-recorder
+            --sign "Developer ID Application" dist/rb-recorder-bin
 
       - name: Package Release
         run: |
           mkdir -p release_package
-          cp dist/auto-rb-recorder release_package/
+          cp dist/rb-recorder-bin release_package/auto-rb-recorder
           cp config.default.toml release_package/
           cd release_package
           zip -r ../auto-rb-recorder-macos-universal.zip *
