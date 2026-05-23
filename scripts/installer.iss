@@ -13,7 +13,7 @@ OutputBaseFilename=auto-rb-recorder-setup
 Compression=lzma2
 SolidCompression=yes
 DisableProgramGroupPage=yes
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 
 [Files]
