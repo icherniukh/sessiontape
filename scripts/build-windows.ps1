@@ -17,7 +17,8 @@ if (Test-Path $CaptureExe) {
 
 Write-Host "Building standalone executable..."
 if (Test-Path "dist") { Remove-Item -Path "dist" -Recurse -Force }
-uv run pyinstaller auto-rb-recorder.spec --clean --noconfirm
+uv run pyinstaller "$ProjectRoot\auto-rb-recorder.spec" --clean --noconfirm
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
 $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
 $iscc = if ($isccCmd) { $isccCmd.Source } else { $null }
@@ -34,7 +35,8 @@ if ($iscc) {
     $version = (git describe --tags --abbrev=0 2>$null) -replace '^v', ''
     if (-not $version) { $version = "dev" }
     Write-Host "Building installer (version $version)..."
-    & $iscc "/DAppVersion=$version" scripts\installer.iss
+    & $iscc "/DAppVersion=$version" "$ScriptDir\installer.iss"
+    if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
 } else {
     Write-Warning "iscc not found. Skipping installer build."
 }
