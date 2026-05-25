@@ -23,7 +23,7 @@ var
 begin
   Result := True;
   // Try to stop the scheduled task and kill the process if it's running
-  Exec('powershell.exe', '-WindowStyle Hidden -ExecutionPolicy Bypass -Command "Stop-ScheduledTask -TaskName ''AutoRbRecorder'' -ErrorAction SilentlyContinue; Get-Process auto-rb-recorder -ErrorAction SilentlyContinue | Stop-Process -Force"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('powershell.exe', '-WindowStyle Hidden -ExecutionPolicy Bypass -Command "Stop-ScheduledTask -TaskName ''AutoRbRecorder'' -ErrorAction SilentlyContinue; Get-Process auto-rb-recorder, rb-capture-win -ErrorAction SilentlyContinue | Stop-Process -Force"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 [Files]
@@ -34,4 +34,4 @@ Source: "..\config.default.toml"; DestDir: "{userappdata}\rb-recorder"; DestName
 Filename: "powershell.exe"; Parameters: "-WindowStyle Hidden -ExecutionPolicy Bypass -Command ""$Action = New-ScheduledTaskAction -Execute '{app}\auto-rb-recorder.exe'; $Trigger = New-ScheduledTaskTrigger -AtLogOn; $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0; $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive; Register-ScheduledTask -TaskName 'AutoRbRecorder' -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null; Start-ScheduledTask -TaskName 'AutoRbRecorder'"""; Flags: runhidden
 
 [UninstallRun]
-Filename: "powershell.exe"; Parameters: "-WindowStyle Hidden -ExecutionPolicy Bypass -Command ""Stop-ScheduledTask -TaskName 'AutoRbRecorder' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'AutoRbRecorder' -Confirm:$false; Get-Process auto-rb-recorder -ErrorAction SilentlyContinue | Stop-Process -Force"""; Flags: runhidden; RunOnceId: "CleanupScheduledTask"
+Filename: "powershell.exe"; Parameters: "-WindowStyle Hidden -ExecutionPolicy Bypass -Command ""Stop-ScheduledTask -TaskName 'AutoRbRecorder' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'AutoRbRecorder' -Confirm:$false; Get-Process auto-rb-recorder, rb-capture-win -ErrorAction SilentlyContinue | Stop-Process -Force"""; Flags: runhidden; RunOnceId: "CleanupScheduledTask"
