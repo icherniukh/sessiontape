@@ -34,11 +34,25 @@ if (-not $iscc) {
 if ($iscc) {
     $version = (git describe --tags --abbrev=0 2>$null) -replace '^v', ''
     if (-not $version) { $version = "dev" }
-    Write-Host "Building installer (version $version)..."
+    Write-Host "Building Inno Setup installer (version $version)..."
     & $iscc "/DAppVersion=$version" "$ScriptDir\installer.iss"
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
 } else {
-    Write-Warning "iscc not found. Skipping installer build."
+    Write-Warning "iscc not found. Skipping Inno Setup installer build."
+}
+
+$wixCmd = Get-Command wix -ErrorAction SilentlyContinue
+if ($wixCmd) {
+    $version = (git describe --tags --abbrev=0 2>$null) -replace '^v', ''
+    if (-not $version) { $version = "1.0.0" } # WiX requires a strict version format like x.y.z
+    if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
+        $version = "1.0.0" # Fallback if tag is not a valid MSI version
+    }
+    Write-Host "Building WiX installer (version $version)..."
+    & wix build "$ScriptDir\installer.wxs" -d AppVersion=$version -b "$ProjectRoot" -o "$ProjectRoot\dist\auto-rb-recorder.msi"
+    if ($LASTEXITCODE -ne 0) { throw "WiX build failed with exit code $LASTEXITCODE" }
+} else {
+    Write-Warning "wix not found. Skipping WiX installer build."
 }
 
 Write-Host "Build complete. Output is in dist\"
