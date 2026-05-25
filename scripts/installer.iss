@@ -16,6 +16,16 @@ DisableProgramGroupPage=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 
+[Code]
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := True;
+  // Try to stop the scheduled task and kill the process if it's running
+  Exec('powershell.exe', '-WindowStyle Hidden -ExecutionPolicy Bypass -Command "Stop-ScheduledTask -TaskName ''AutoRbRecorder'' -ErrorAction SilentlyContinue; Get-Process auto-rb-recorder -ErrorAction SilentlyContinue | Stop-Process -Force"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 [Files]
 Source: "..\dist\auto-rb-recorder.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\config.default.toml"; DestDir: "{userappdata}\rb-recorder"; DestName: "config.toml"; Flags: onlyifdoesntexist

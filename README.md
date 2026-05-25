@@ -25,8 +25,10 @@ The installer places the application in `%LOCALAPPDATA%\Programs\auto-rb-recorde
 ### Manual Download
 
 1. Download the latest `auto-rb-recorder-setup.exe` from the [Releases](https://github.com/icherniukh/auto-rb-recorder/releases) page.
-2. Run the installer. 
-   > **Note:** Windows SmartScreen may flag the installer as "Windows protected your PC" because it is an unsigned executable. Click **More info** -> **Run anyway** to proceed.
+2. **Unblock the installer:** Right-click the downloaded `.exe` -> **Properties** -> Check **Unblock** -> **OK**.
+   - *Alternatively, run this in PowerShell:* `Unblock-File -Path "$env:USERPROFILE\Downloads\auto-rb-recorder-setup.exe"`
+3. Run the installer. 
+   > **Note:** If you still see "Windows protected your PC", click **More info** -> **Run anyway**. This happens because the executable is unsigned.
 
 _(Optional)_ If you want to export recordings as MP3 instead of WAV, ensure `ffmpeg` is installed and available on your system `PATH`.
 
