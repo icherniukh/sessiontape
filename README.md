@@ -19,7 +19,7 @@ Open PowerShell and paste this command to download and run the installer directl
 $exe = "$env:TEMP\auto-rb-recorder-setup.exe"; Invoke-WebRequest -Uri "https://github.com/icherniukh/auto-rb-recorder/releases/latest/download/auto-rb-recorder-setup.exe" -OutFile $exe; if ($?) { Start-Process $exe -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES' -Wait }
 ```
 
-The installer places the application in `%LOCALAPPDATA%\Programs\auto-rb-recorder` and the config in `%APPDATA%\rb-recorder\config.toml`. It registers a Scheduled Task so it runs automatically at login.
+The installer places the application in `%LOCALAPPDATA%\Programs\auto-rb-recorder` and the config in `%APPDATA%\auto-rb-recorder\config.toml`. It registers a Scheduled Task so it runs automatically at login.
 
 #### Method 2: Manual Download
 1. Download the latest `auto-rb-recorder-setup.exe` from the [Releases](https://github.com/icherniukh/auto-rb-recorder/releases) page.
@@ -74,8 +74,8 @@ auto-rb-recorder -v     # verbose debug logging
 The application uses a configuration file to customize its behavior (such as output directory, silence thresholds, and export format).
 
 **Config file locations:**
-- **Windows:** `%APPDATA%\rb-recorder\config.toml` (created automatically by the installer)
-- **macOS:** `~/Library/Application Support/rb-recorder/config.toml` (you must create this manually)
+- **Windows:** `%APPDATA%\auto-rb-recorder\config.toml` (created automatically by the installer)
+- **macOS:** `~/Library/Application Support/auto-rb-recorder/config.toml` (you must create this manually)
 
 You can find a complete list of settings and their default values in the [`config.default.toml`](config.default.toml) file in this repository.
 

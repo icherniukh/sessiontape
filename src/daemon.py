@@ -15,7 +15,7 @@ from src.events import (CaptureDied, EventQueue, ExportFailed, ExportFinished,
 from src.process_monitor import ProcessMonitor
 from src.recorder_core import ExportManager, recover_orphaned_raw_files
 
-log = logging.getLogger("rb-recorder")
+log = logging.getLogger("auto-rb-recorder")
 
 _STALE_PROCESS_NAMES = {"mac-capture", "auto-rb-recorder"}
 
@@ -105,7 +105,7 @@ class RecorderDaemon:
         signal.signal(signal.SIGTERM, _on_signal)
         signal.signal(signal.SIGINT, _on_signal)
 
-        log.info(f"--- rb-recorder started · PID {os.getpid()} ---")
+        log.info(f"--- auto-rb-recorder started · PID {os.getpid()} ---")
 
         # Start the process monitor thread
         self._monitor.start()

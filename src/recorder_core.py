@@ -17,7 +17,7 @@ from typing import Callable, Optional
 
 from src.events import Event, ExportFailed, ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
 
-log = logging.getLogger("rb-recorder")
+log = logging.getLogger("auto-rb-recorder")
 
 
 def db_to_rms(db: float) -> float:

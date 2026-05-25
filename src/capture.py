@@ -8,8 +8,8 @@ from src.events import CaptureDied, Event, EventQueue, TapBroken
 from src.platform import get_platform_backend
 from src.recorder_core import ExportManager, PCMStreamRecorder
 
-log = logging.getLogger("rb-recorder")
-capture_log = logging.getLogger("rb-recorder.capture")
+log = logging.getLogger("auto-rb-recorder")
+capture_log = logging.getLogger("auto-rb-recorder.capture")
 
 
 class AudioCapture:

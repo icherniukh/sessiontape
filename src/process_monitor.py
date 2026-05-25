@@ -7,7 +7,7 @@ import psutil
 
 from src.events import EventQueue, ProcessReplaced, ProcessStarted, ProcessStopped
 
-log = logging.getLogger("rb-recorder")
+log = logging.getLogger("auto-rb-recorder")
 
 
 class ProcessMonitor(threading.Thread):

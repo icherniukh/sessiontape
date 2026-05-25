@@ -1,6 +1,6 @@
 # config.default.toml — Rekordbox Auto-Recorder defaults
-# Windows: copy to %APPDATA%\rb-recorder\config.toml
-# macOS:   copy to ~/Library/Application Support/rb-recorder/config.toml
+# Windows: copy to %APPDATA%\auto-rb-recorder\config.toml
+# macOS:   copy to ~/Library/Application Support/auto-rb-recorder/config.toml
 
 [recording]
 sample_rate = 48000
