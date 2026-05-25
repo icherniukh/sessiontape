@@ -104,12 +104,19 @@ jobs:
           .venv\Scripts\activate
           uv pip install pyinstaller
 
+      - name: Install WiX Toolset
+        run: dotnet tool install --global wix
+
       - name: Build and Package
         run: |
           .venv\Scripts\activate
           powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: 1
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2.6.1
         with:
-          files: dist/auto-rb-recorder-setup.exe
+          files: |
+            dist/auto-rb-recorder-setup.exe
+            dist/auto-rb-recorder.msi
