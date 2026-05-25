@@ -49,7 +49,7 @@ if ($wixCmd) {
         $version = "1.0.0" # Fallback if tag is not a valid MSI version
     }
     Write-Host "Building WiX installer (version $version)..."
-    & wix build "$ScriptDir\installer.wxs" --acceptEula -d AppVersion=$version -b "$ProjectRoot" -o "$ProjectRoot\dist\auto-rb-recorder.msi"
+    & wix build "$ScriptDir\installer.wxs" -acceptEula wix7 -d AppVersion=$version -b "$ProjectRoot" -o "$ProjectRoot\dist\auto-rb-recorder.msi"
     if ($LASTEXITCODE -ne 0) { throw "WiX build failed with exit code $LASTEXITCODE" }
 } else {
     Write-Warning "wix not found. Skipping WiX installer build."
