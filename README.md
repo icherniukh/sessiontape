@@ -128,3 +128,10 @@ uv run pytest tests/ -v
 | `src/recorder_core.py` | Silence detection, raw session writing, WAV/MP3 export |
 | `windows-capture/main.cpp` | Native WASAPI process loopback helper (Windows) |
 | `mac-capture/` | Native CoreAudio process tap helper (macOS) |
+
+## License
+
+© 2026 Ivan Cherniukh.
+
+All code is licensed under the GPL, v3 or later. See [LICENSE](./LICENSE) file
+for details.
