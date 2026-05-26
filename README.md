@@ -12,6 +12,8 @@ Background daemon that automatically records Pioneer Rekordbox DJ sets by captur
 
 ### Windows (Pre-built)
 
+Windows code signing is provided by SignPath.io, certificate by SignPath Foundation.
+
 #### Method 1: PowerShell (Recommended)
 Open PowerShell and paste this command to download and run the installer directly:
 
@@ -135,3 +137,7 @@ uv run pytest tests/ -v
 
 All code is licensed under the GPL, v3 or later. See [LICENSE](./LICENSE) file
 for details.
+
+## Privacy
+
+See [PRIVACY.md](./PRIVACY.md).

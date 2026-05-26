@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Optional
 
+from src.config import SUPPORTED_EXPORT_FORMATS
 from src.events import Event, ExportFailed, ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
 
 log = logging.getLogger("auto-rb-recorder")
@@ -67,7 +68,12 @@ class ExportManager:
         self.sample_rate = sample_rate
         self.channels = channels
         self.bytes_per_sample = bytes_per_sample
+        if not isinstance(export_format, str):
+            raise ValueError("export_format must be a string")
         self.export_format = export_format.lower()
+        if self.export_format not in SUPPORTED_EXPORT_FORMATS:
+            supported = ", ".join(sorted(SUPPORTED_EXPORT_FORMATS))
+            raise ValueError(f"export_format must be one of: {supported}")
         self.event_sink = event_sink
         self._jobs: queue.Queue[Optional[_ExportJob]] = queue.Queue()
         self._worker: Optional[threading.Thread] = None
@@ -198,7 +204,12 @@ class PCMStreamRecorder:
         self.on_tap_broken = on_tap_broken
         self.sample_rate = sample_rate
         self.min_segment_duration = min_segment_duration
+        if not isinstance(export_format, str):
+            raise ValueError("export_format must be a string")
         self.export_format = export_format.lower()
+        if self.export_format not in SUPPORTED_EXPORT_FORMATS:
+            supported = ", ".join(sorted(SUPPORTED_EXPORT_FORMATS))
+            raise ValueError(f"export_format must be one of: {supported}")
         self.event_sink = event_sink
 
         self.chunk_duration = 0.1  # 100ms chunks

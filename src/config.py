@@ -6,6 +6,7 @@ from pathlib import Path, PureWindowsPath
 
 
 APP_DIR = "auto-rb-recorder"
+SUPPORTED_EXPORT_FORMATS = {"wav", "mp3"}
 
 
 def default_output_dir() -> str:
@@ -56,6 +57,35 @@ class Config:
     process_name: str = "rekordbox"
     poll_interval: float = 2.0
 
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if (
+            not isinstance(self.sample_rate, int)
+            or isinstance(self.sample_rate, bool)
+            or self.sample_rate <= 0
+        ):
+            raise ValueError("recording.sample_rate must be a positive integer")
+
+        if not isinstance(self.export_format, str):
+            raise ValueError("recording.export_format must be a string")
+        self.export_format = self.export_format.lower()
+        if self.export_format not in SUPPORTED_EXPORT_FORMATS:
+            supported = ", ".join(sorted(SUPPORTED_EXPORT_FORMATS))
+            raise ValueError(f"recording.export_format must be one of: {supported}")
+
+        if self.silence_threshold_db > 0:
+            raise ValueError("trigger.silence_threshold_db must be 0 or lower")
+        if self.min_silence_duration < 0:
+            raise ValueError("trigger.min_silence_duration must be non-negative")
+        if self.min_segment_duration < 0:
+            raise ValueError("trigger.min_segment_duration must be non-negative")
+        if self.decay_tail < 0:
+            raise ValueError("trigger.decay_tail must be non-negative")
+        if self.poll_interval <= 0:
+            raise ValueError("monitor.poll_interval must be positive")
+
     @classmethod
     def from_file(cls, path: str) -> "Config":
         with open(path, "rb") as f:
@@ -87,4 +117,5 @@ class Config:
         if "poll_interval" in monitor:
             cfg.poll_interval = monitor["poll_interval"]
 
+        cfg.validate()
         return cfg

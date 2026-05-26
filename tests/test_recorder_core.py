@@ -1,10 +1,52 @@
+import json
+import math
 import os
+import shutil
+import struct
+import subprocess
 import tempfile
 import unittest
+import wave
 from unittest.mock import MagicMock, patch
 
+from src.config import Config
 from src.events import ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
 from src.recorder_core import ExportManager, PCMStreamRecorder
+
+
+def write_sine_raw(path: str, sample_rate: int, seconds: float = 0.5) -> None:
+    frame_count = int(sample_rate * seconds)
+    amplitude = 10000
+    with open(path, "wb") as raw_file:
+        for frame in range(frame_count):
+            sample = int(amplitude * math.sin(2 * math.pi * 440 * frame / sample_rate))
+            raw_file.write(struct.pack("<hh", sample, sample))
+
+
+def ffprobe_audio_stream(path: str) -> dict:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        raise unittest.SkipTest("ffprobe is required for MP3 validity checks")
+
+    output = subprocess.check_output(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name,sample_rate,channels",
+            "-of",
+            "json",
+            path,
+        ],
+        text=True,
+    )
+    streams = json.loads(output)["streams"]
+    if not streams:
+        raise AssertionError("No audio stream found")
+    return streams[0]
 
 
 class TestPCMStreamRecorder(unittest.TestCase):
@@ -68,6 +110,70 @@ class TestPCMStreamRecorder(unittest.TestCase):
         args, kwargs = mock_run.call_args
         if sys.platform == "win32":
             self.assertEqual(kwargs.get("creationflags"), getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+
+    def test_mp3_config_produces_valid_mp3(self):
+        if not shutil.which("ffmpeg"):
+            self.skipTest("ffmpeg is required for MP3 export")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.toml")
+            raw_path = os.path.join(tmpdir, "segment.raw")
+            output_path = os.path.join(tmpdir, "segment.mp3")
+
+            with open(config_path, "w") as config_file:
+                config_file.write(
+                    "[recording]\n"
+                    "sample_rate = 44100\n"
+                    f"output_dir = \"{tmpdir}\"\n"
+                    "export_format = \"mp3\"\n"
+                )
+
+            cfg = Config.from_file(config_path)
+            write_sine_raw(raw_path, cfg.sample_rate)
+
+            manager = ExportManager(
+                sample_rate=cfg.sample_rate,
+                channels=2,
+                bytes_per_sample=2,
+                export_format=cfg.export_format,
+            )
+            manager._convert_mp3(raw_path, output_path)
+
+            self.assertTrue(os.path.getsize(output_path) > 0)
+            stream = ffprobe_audio_stream(output_path)
+            self.assertEqual(stream["codec_name"], "mp3")
+            self.assertEqual(int(stream["sample_rate"]), 44100)
+            self.assertEqual(stream["channels"], 2)
+
+    def test_wav_export_uses_configured_sample_rate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_path = os.path.join(tmpdir, "segment.raw")
+            output_path = os.path.join(tmpdir, "segment.wav")
+            write_sine_raw(raw_path, sample_rate=44100, seconds=0.1)
+
+            manager = ExportManager(
+                sample_rate=44100,
+                channels=2,
+                bytes_per_sample=2,
+                export_format="wav",
+            )
+            manager._convert_wav(raw_path, output_path)
+
+            with wave.open(output_path, "rb") as wav_file:
+                self.assertEqual(wav_file.getframerate(), 44100)
+                self.assertEqual(wav_file.getnchannels(), 2)
+
+    def test_rejects_unsupported_export_format(self):
+        with self.assertRaises(ValueError):
+            PCMStreamRecorder(output_dir="/tmp", export_format="flac")
+
+        with self.assertRaises(ValueError):
+            ExportManager(
+                sample_rate=48000,
+                channels=2,
+                bytes_per_sample=2,
+                export_format="flac",
+            )
 
     def test_finalize_exports_active_session(self):
         with tempfile.TemporaryDirectory() as tmpdir:
