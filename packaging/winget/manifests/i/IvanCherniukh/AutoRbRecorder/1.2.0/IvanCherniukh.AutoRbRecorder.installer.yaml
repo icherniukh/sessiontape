@@ -1,0 +1,18 @@
+PackageIdentifier: IvanCherniukh.AutoRbRecorder
+PackageVersion: 1.2.0
+InstallerType: inno
+Platform:
+- Windows.Desktop
+MinimumOSVersion: 10.0.19041.0
+Scope: user
+InstallModes:
+- silent
+- silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: "2026-05-25"
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/icherniukh/auto-rb-recorder/releases/download/v1.2.0/auto-rb-recorder-setup.exe
+  InstallerSha256: C020C239B2B4845FC802C4C962AD6AD380A729C3C62AA841FC4A7240069A025
+ManifestType: installer
+ManifestVersion: 1.12.0
