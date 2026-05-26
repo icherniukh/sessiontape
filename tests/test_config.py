@@ -59,5 +59,31 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.min_silence_duration, 20)
         self.assertEqual(cfg.decay_tail, 5)
 
+    def test_rejects_invalid_export_format(self):
+        toml_content = (
+            '[recording]\n'
+            'export_format = "flac"\n'
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write(toml_content)
+            f.flush()
+            path = f.name
+
+        try:
+            with self.assertRaisesRegex(ValueError, "recording.export_format"):
+                Config.from_file(path)
+        finally:
+            os.unlink(path)
+
+    def test_rejects_invalid_timing_and_rate_values(self):
+        with self.assertRaisesRegex(ValueError, "sample_rate"):
+            Config(sample_rate=0)
+
+        with self.assertRaisesRegex(ValueError, "min_silence_duration"):
+            Config(min_silence_duration=-1)
+
+        with self.assertRaisesRegex(ValueError, "poll_interval"):
+            Config(poll_interval=0)
+
 if __name__ == "__main__":
     unittest.main()
