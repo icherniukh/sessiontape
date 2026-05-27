@@ -1,0 +1,66 @@
+name: Package Manager Validation
+
+# Disabled on purpose. Rename this file to package-managers.yml when we are
+# ready to validate package-manager manifests in GitHub Actions.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - packaging/winget/**
+      - packaging/chocolatey/**
+      - .github/workflows/package-managers.yml
+  push:
+    branches:
+      - main
+    paths:
+      - packaging/winget/**
+      - packaging/chocolatey/**
+      - .github/workflows/package-managers.yml
+
+jobs:
+  validate-winget:
+    name: Validate winget manifest
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Validate manifest
+        shell: pwsh
+        run: |
+          $manifest = "packaging\winget\manifests\i\IvanCherniukh\AutoRbRecorder\1.2.0"
+          winget validate --manifest $manifest
+
+  package-chocolatey:
+    name: Build Chocolatey package
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Build package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          choco pack packaging\chocolatey\auto-rb-recorder\auto-rb-recorder.nuspec --outputdirectory artifacts
+
+      - name: Smoke test package metadata
+        shell: pwsh
+        run: |
+          $pkg = Get-ChildItem artifacts -Filter "auto-rb-recorder*.nupkg" | Select-Object -First 1
+          if (-not $pkg) {
+            throw "Chocolatey package was not created"
+          }
+          choco info auto-rb-recorder --source artifacts --version 1.2.0 --exact
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: chocolatey-package
+          path: artifacts/*.nupkg
