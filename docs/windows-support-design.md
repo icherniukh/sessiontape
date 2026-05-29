@@ -13,7 +13,7 @@ Current repo state:
 
 ## Goal
 
-Add Windows support to `auto-rb-recorder` without regressing the current macOS recording path and without introducing refactors that materially hurt throughput, latency, or idle resource usage.
+Add Windows support to `sessiontape` without regressing the current macOS recording path and without introducing refactors that materially hurt throughput, latency, or idle resource usage.
 
 The Windows implementation should preserve the current product behavior:
 
@@ -180,7 +180,7 @@ This should be cold-path code only.
 
 ### Backend Choice
 
-Preferred approach: a native helper executable, tentatively `rb-capture-win.exe`, that:
+Preferred approach: a native helper executable, tentatively `sessiontape-capture-win.exe`, that:
 
 - accepts a target PID
 - captures only that process tree's rendered audio using Windows process loopback APIs
@@ -236,7 +236,7 @@ Current config and output defaults are Unix-specific.
 
 Required changes:
 
-- replace hardcoded `~/.config/rb-recorder/config.toml`
+- replace hardcoded `~/.config/sessiontape/config.toml`
 - replace hardcoded output path logic with platform-aware defaults
 
 Preferred library:
@@ -246,13 +246,13 @@ Preferred library:
 Expected defaults:
 
 - macOS config:
-  - `~/.config/rb-recorder/config.toml` can remain supported for compatibility
+  - `~/.config/sessiontape/config.toml` can remain supported for compatibility
 - Windows config:
-  - `%APPDATA%/rb-recorder/config.toml`
+  - `%APPDATA%/sessiontape/config.toml`
 - macOS output:
-  - `~/Music/auto-rb-recorder`
+  - `~/Music/sessiontape`
 - Windows output:
-  - `%USERPROFILE%/Music/auto-rb-recorder`
+  - `%USERPROFILE%/Music/sessiontape`
 
 Backward compatibility matters here. Existing macOS users should not be broken by the path refactor.
 
@@ -280,7 +280,7 @@ Windows packaging should mirror the macOS packaging philosophy: ship a single ex
 Expected build changes:
 
 - add a Windows PyInstaller target
-- include `rb-capture-win.exe` as a bundled binary
+- include `sessiontape-capture-win.exe` as a bundled binary
 - include `ffmpeg.exe` only if MP3 export is enabled in distributed builds
 
 Potential deliverables:
@@ -308,7 +308,7 @@ The existing tests in `tests/test_capture.py`, `tests/test_process_monitor.py`, 
 Add backend-level tests that mock subprocess/stdout behavior:
 
 - macOS backend starts `audiotee` correctly
-- Windows backend starts `rb-capture-win.exe` correctly
+- Windows backend starts `sessiontape-capture-win.exe` correctly
 - stop path terminates subprocesses cleanly
 
 ### Manual Validation Matrix
