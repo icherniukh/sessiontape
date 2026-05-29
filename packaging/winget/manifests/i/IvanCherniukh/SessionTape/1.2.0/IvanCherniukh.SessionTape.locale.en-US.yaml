@@ -1,0 +1,25 @@
+PackageIdentifier: IvanCherniukh.SessionTape
+PackageVersion: 1.2.0
+PackageLocale: en-US
+Publisher: Ivan Cherniukh
+PublisherUrl: https://github.com/icherniukh
+PublisherSupportUrl: https://github.com/icherniukh/sessiontape/issues
+PrivacyUrl: https://github.com/icherniukh/sessiontape/blob/main/PRIVACY.md
+PackageName: SessionTape
+PackageUrl: https://github.com/icherniukh/sessiontape
+License: GPL-3.0-or-later
+LicenseUrl: https://github.com/icherniukh/sessiontape/blob/main/LICENSE
+Copyright: Copyright (C) 2026 Ivan Cherniukh
+ShortDescription: Automatically record Rekordbox DJ sets in the background.
+Description: SessionTape is an open-source desktop utility that runs in the background and records Pioneer Rekordbox audio sessions automatically. It detects when Rekordbox is playing, splits recordings around silence, and saves finished sessions locally.
+Moniker: sessiontape
+Tags:
+- audio
+- dj
+- mp3
+- recorder
+- rekordbox
+- wav
+ReleaseNotesUrl: https://github.com/icherniukh/sessiontape/releases/tag/v1.2.0
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0

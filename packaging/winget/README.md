@@ -1,14 +1,14 @@
 # Windows Package Manager
 
-This directory contains a staging winget manifest for `auto-rb-recorder`.
+This directory contains a staging winget manifest for `sessiontape`.
 
 The manifest is meant to be validated locally before copying it into a PR for
 the upstream `microsoft/winget-pkgs` repository:
 
 ```powershell
-winget validate packaging\winget\manifests\i\IvanCherniukh\AutoRbRecorder\1.2.0
-winget install --manifest packaging\winget\manifests\i\IvanCherniukh\AutoRbRecorder\1.2.0
-winget uninstall IvanCherniukh.AutoRbRecorder
+winget validate packaging\winget\manifests\i\IvanCherniukh\SessionTape\1.2.0
+winget install --manifest packaging\winget\manifests\i\IvanCherniukh\SessionTape\1.2.0
+winget uninstall IvanCherniukh.SessionTape
 ```
 
 Before submitting upstream:

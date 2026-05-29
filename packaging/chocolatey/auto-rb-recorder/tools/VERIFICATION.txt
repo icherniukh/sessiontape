@@ -1,8 +1,0 @@
-The package downloads the official auto-rb-recorder Windows installer from the
-project's GitHub Releases page:
-
-https://github.com/icherniukh/auto-rb-recorder/releases/download/v1.2.0/auto-rb-recorder-setup.exe
-
-The SHA256 checksum is recorded in chocolateyInstall.ps1:
-
-C020C239B2B4845FC802C4C962AD6AD380A729C3C62AA841FC4A7240069A025

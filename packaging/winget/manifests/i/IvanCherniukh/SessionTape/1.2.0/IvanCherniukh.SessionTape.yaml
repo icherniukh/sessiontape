@@ -1,6 +1,6 @@
 # Created with local staging files. Copy into microsoft/winget-pkgs only after
 # validating the matching signed release installer on Windows.
-PackageIdentifier: IvanCherniukh.AutoRbRecorder
+PackageIdentifier: IvanCherniukh.SessionTape
 PackageVersion: 1.2.0
 DefaultLocale: en-US
 ManifestType: version
