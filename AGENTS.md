@@ -21,6 +21,7 @@ gh issue close <num>  # Close an issue
 
 ## Key Decisions & Pitfalls
 
+- **Product rename decision: SessionTape** — The project should be renamed from `auto-rb-recorder` to **SessionTape** before public winget/Chocolatey/App Store submissions harden the old identity. Planned public identifiers should use `sessiontape` where package-manager conventions allow it (CLI/binary/package/config dir), with display name `SessionTape`.
 - **AudioCapCLI doesn't work from scripts** — macOS TCC blocks it outside interactive terminals. Don't switch back to it.
 - **ProcTap/ScreenCaptureKit returns all zeros for Rekordbox** — Rekordbox uses a custom audio engine that bypasses ScreenCaptureKit's hooks. Don't revisit this path.
 - **Rekordbox bundle ID is `com.pioneerdj.rekordboxdj`** (not `com.pioneerdj.rekordbox`).
