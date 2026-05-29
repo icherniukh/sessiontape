@@ -422,7 +422,7 @@ final class AppAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 
         logDebug("Creating SCStream with display-scoped app filter")
         let newStream = SCStream(filter: filter, configuration: config, delegate: self)
-        let audioQueue = DispatchQueue(label: "com.rb-recorder.audioQueue", qos: .userInitiated)
+        let audioQueue = DispatchQueue(label: "dev.icherniukh.sessiontape.audioQueue", qos: .userInitiated)
         try newStream.addStreamOutput(self, type: SCStreamOutputType.audio, sampleHandlerQueue: audioQueue)
 
         self.stream = newStream

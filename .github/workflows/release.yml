@@ -50,29 +50,29 @@ jobs:
         run: |
           xcrun codesign --force --options runtime --timestamp \
             --entitlements entitlements.plist \
-            --sign "Developer ID Application" dist/auto-rb-recorder
+            --sign "Developer ID Application" dist/sessiontape
 
       - name: Package Release
         run: |
           mkdir -p release_package
-          cp dist/auto-rb-recorder release_package/
+          cp dist/sessiontape release_package/
           cp config.default.toml release_package/
           cd release_package
-          zip -r ../auto-rb-recorder-macos-universal.zip *
+          zip -r ../sessiontape-macos-universal.zip *
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2.6.1
         with:
-          files: auto-rb-recorder-macos-universal.zip
+          files: sessiontape-macos-universal.zip
           generate_release_notes: true
 
       - name: Update Homebrew Tap
         uses: mislav/bump-homebrew-formula-action@v4.1
         with:
-          formula-name: auto-rb-recorder
+          formula-name: sessiontape
           homebrew-tap: icherniukh/homebrew-tap
           base-branch: main
-          download-url: https://github.com/icherniukh/auto-rb-recorder/releases/download/${{ github.ref_name }}/auto-rb-recorder-macos-universal.zip
+          download-url: https://github.com/icherniukh/sessiontape/releases/download/${{ github.ref_name }}/sessiontape-macos-universal.zip
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
@@ -118,5 +118,5 @@ jobs:
         uses: softprops/action-gh-release@v2.6.1
         with:
           files: |
-            dist/auto-rb-recorder-setup.exe
-            dist/auto-rb-recorder.msi
+            dist/sessiontape-setup.exe
+            dist/sessiontape.msi

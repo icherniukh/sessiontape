@@ -21,7 +21,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.decay_tail, 5)
         self.assertEqual(cfg.poll_interval, 2.0)
         self.assertEqual(cfg.process_name, "rekordbox")
-        self.assertTrue(cfg.output_dir.endswith("auto-rb-recorder"))
+        self.assertTrue(cfg.output_dir.endswith("sessiontape"))
         self.assertEqual(cfg.output_dir, default_output_dir())
 
     def test_platform_config_path_windows(self):
@@ -29,7 +29,7 @@ class TestConfig(unittest.TestCase):
             with patch.dict("src.config.os.environ", {"APPDATA": r"%APPDATA%"}, clear=False):
                 self.assertEqual(
                     platform_config_path(),
-                    r"%APPDATA%\auto-rb-recorder\config.toml",
+                    r"%APPDATA%\sessiontape\config.toml",
                 )
 
     def test_resolve_config_path_uses_explicit_override(self):

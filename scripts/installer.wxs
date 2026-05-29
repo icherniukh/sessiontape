@@ -1,13 +1,13 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="auto-rb-recorder" Manufacturer="auto-rb-recorder" Version="$(var.AppVersion)" UpgradeCode="9b2d6a5d-1c3f-4e8c-a6a9-4b6a8a3a2a1a" Scope="perUser">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of auto-rb-recorder is already installed." />
+  <Package Name="SessionTape" Manufacturer="Ivan Cherniukh" Version="$(var.AppVersion)" UpgradeCode="9b2d6a5d-1c3f-4e8c-a6a9-4b6a8a3a2a1a" Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of SessionTape is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsFolder" Name="Programs">
-        <Directory Id="INSTALLFOLDER" Name="auto-rb-recorder">
+        <Directory Id="INSTALLFOLDER" Name="SessionTape">
           <Component Id="MainExecutable" Guid="3f6b4a2d-1c3f-4e8c-a6a9-4b6a8a3a2a1b">
-            <File Id="AutoRbRecorderExe" Source="dist\auto-rb-recorder.exe" KeyPath="yes" />
+            <File Id="SessionTapeExe" Source="dist\sessiontape.exe" KeyPath="yes" />
             <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
           </Component>
         </Directory>
@@ -15,11 +15,11 @@
     </StandardDirectory>
 
     <StandardDirectory Id="AppDataFolder">
-      <Directory Id="AutoRbRecorderAppData" Name="auto-rb-recorder">
+      <Directory Id="SessionTapeAppData" Name="sessiontape">
         <Component Id="ConfigFile" Guid="1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d" NeverOverwrite="yes">
           <File Id="ConfigToml" Source="config.default.toml" Name="config.toml" KeyPath="yes" />
           <RemoveFolder Id="RemoveAppDataFolder" On="uninstall" />
-          <RegistryValue Root="HKCU" Key="Software\auto-rb-recorder" Name="ConfigInstalled" Type="integer" Value="1" KeyPath="no" />
+          <RegistryValue Root="HKCU" Key="Software\sessiontape" Name="ConfigInstalled" Type="integer" Value="1" KeyPath="no" />
         </Component>
       </Directory>
     </StandardDirectory>
@@ -30,10 +30,10 @@
     </Feature>
 
     <CustomAction Id="CleanupTaskAndProcesses" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="yes" Return="ignore"
-                  ExeCommand="powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;Stop-ScheduledTask -TaskName 'AutoRbRecorder' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'AutoRbRecorder' -Confirm:$false -ErrorAction SilentlyContinue; Get-Process auto-rb-recorder, rb-capture-win -ErrorAction SilentlyContinue | Stop-Process -Force&quot;" />
+                  ExeCommand="powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;Stop-ScheduledTask -TaskName 'SessionTape' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'SessionTape' -Confirm:$false -ErrorAction SilentlyContinue; Get-Process sessiontape, sessiontape-capture-win -ErrorAction SilentlyContinue | Stop-Process -Force&quot;" />
 
     <CustomAction Id="CreateScheduledTask" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="yes" Return="ignore"
-                  ExeCommand="powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;$Action = New-ScheduledTaskAction -Execute '[INSTALLFOLDER]auto-rb-recorder.exe'; $Trigger = New-ScheduledTaskTrigger -AtLogOn; $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0; $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive; Register-ScheduledTask -TaskName 'AutoRbRecorder' -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null; Start-ScheduledTask -TaskName 'AutoRbRecorder'&quot;" />
+                  ExeCommand="powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;$Action = New-ScheduledTaskAction -Execute '[INSTALLFOLDER]sessiontape.exe'; $Trigger = New-ScheduledTaskTrigger -AtLogOn; $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0; $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive; Register-ScheduledTask -TaskName 'SessionTape' -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null; Start-ScheduledTask -TaskName 'SessionTape'&quot;" />
 
     <InstallExecuteSequence>
       <Custom Action="CleanupTaskAndProcesses" Before="RemoveFiles" Condition="Installed" />

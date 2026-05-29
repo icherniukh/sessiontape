@@ -43,6 +43,6 @@ fi
 
 echo "Building standalone executable..."
 rm -rf dist/
-uv run pyinstaller auto-rb-recorder.spec --clean --noconfirm
+uv run pyinstaller sessiontape.spec --clean --noconfirm
 
-echo "Build complete. Executable is at dist/auto-rb-recorder"
+echo "Build complete. Executable is at dist/sessiontape"

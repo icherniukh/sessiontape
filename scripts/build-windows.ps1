@@ -4,7 +4,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $ProjectRoot = Split-Path -Parent $ScriptDir
 Set-Location $ProjectRoot
 
-$CaptureExe = "windows-capture\rb-capture-win.exe"
+$CaptureExe = "windows-capture\sessiontape-capture-win.exe"
 if (Test-Path $CaptureExe) {
     Write-Host "Windows capture helper already built, skipping."
 } else {
@@ -17,7 +17,7 @@ if (Test-Path $CaptureExe) {
 
 Write-Host "Building standalone executable..."
 if (Test-Path "dist") { Remove-Item -Path "dist" -Recurse -Force }
-uv run pyinstaller "$ProjectRoot\auto-rb-recorder.spec" --distpath "$ProjectRoot\dist" --workpath "$ProjectRoot\build" --clean --noconfirm
+uv run pyinstaller "$ProjectRoot\sessiontape.spec" --distpath "$ProjectRoot\dist" --workpath "$ProjectRoot\build" --clean --noconfirm
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
 $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
@@ -49,7 +49,7 @@ if ($wixCmd) {
         $version = "1.0.0" # Fallback if tag is not a valid MSI version
     }
     Write-Host "Building WiX installer (version $version)..."
-    & wix build "$ScriptDir\installer.wxs" -acceptEula wix7 -d AppVersion=$version -b "$ProjectRoot" -o "$ProjectRoot\dist\auto-rb-recorder.msi"
+    & wix build "$ScriptDir\installer.wxs" -acceptEula wix7 -d AppVersion=$version -b "$ProjectRoot" -o "$ProjectRoot\dist\sessiontape.msi"
     if ($LASTEXITCODE -ne 0) { throw "WiX build failed with exit code $LASTEXITCODE" }
 } else {
     Write-Warning "wix not found. Skipping WiX installer build."

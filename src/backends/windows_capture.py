@@ -7,12 +7,12 @@ import sys
 from src.backends.base import CaptureBackend
 from src.recorder_core import _find_executable
 
-log = logging.getLogger("auto-rb-recorder")
+log = logging.getLogger("sessiontape")
 
 
 class WindowsCaptureBackend(CaptureBackend):
     def start(self, pid: int, sample_rate: int) -> subprocess.Popen:
-        exe = _find_executable("rb-capture-win.exe")
+        exe = _find_executable("sessiontape-capture-win.exe")
         cmd = [exe, "--pid", str(pid), "--sample-rate", str(sample_rate)]
         log.info(f"Launching capture helper: {' '.join(cmd)}")
         

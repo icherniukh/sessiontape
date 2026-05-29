@@ -18,7 +18,7 @@ from typing import Callable, Optional
 from src.config import SUPPORTED_EXPORT_FORMATS
 from src.events import Event, ExportFailed, ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
 
-log = logging.getLogger("auto-rb-recorder")
+log = logging.getLogger("sessiontape")
 
 
 def db_to_rms(db: float) -> float:

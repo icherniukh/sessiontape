@@ -1,10 +1,10 @@
-# config.default.toml — Rekordbox Auto-Recorder defaults
-# Windows: copy to %APPDATA%\auto-rb-recorder\config.toml
-# macOS:   copy to ~/Library/Application Support/auto-rb-recorder/config.toml
+# config.default.toml — SessionTape defaults
+# Windows: copy to %APPDATA%\sessiontape\config.toml
+# macOS:   copy to ~/Library/Application Support/sessiontape/config.toml
 
 [recording]
 sample_rate = 48000
-output_dir = "~/Music/auto-rb-recorder"
+output_dir = "~/Music/sessiontape"
 export_format = "wav"  # allow "wav" or "mp3"
 
 [trigger]

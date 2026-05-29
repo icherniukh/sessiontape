@@ -4,7 +4,7 @@ import subprocess
 from src.backends.base import CaptureBackend
 from src.recorder_core import _find_executable
 
-log = logging.getLogger("auto-rb-recorder")
+log = logging.getLogger("sessiontape")
 
 
 class MacCaptureBackend(CaptureBackend):

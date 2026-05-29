@@ -8,7 +8,7 @@ from src.daemon import RecorderDaemon
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Rekordbox Auto-Recorder")
+    parser = argparse.ArgumentParser(description="SessionTape")
     parser.add_argument(
         "-c", "--config",
         help="Path to config file",

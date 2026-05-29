@@ -4,7 +4,7 @@
 import sys
 
 if sys.platform == 'win32':
-    binaries = [('windows-capture\\rb-capture-win.exe', '.')]
+    binaries = [('windows-capture\\sessiontape-capture-win.exe', '.')]
 elif sys.platform == 'darwin':
     binaries = [('mac-capture/.build/release/mac-capture', '.')]
 else:
@@ -31,7 +31,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='auto-rb-recorder',
+    name='sessiontape',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
