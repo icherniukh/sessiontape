@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$packageName = 'auto-rb-recorder'
-$uninstallKeys = Get-UninstallRegistryKey -SoftwareName 'auto-rb-recorder*'
+$packageName = 'sessiontape'
+$uninstallKeys = Get-UninstallRegistryKey -SoftwareName 'SessionTape*'
 
 foreach ($key in $uninstallKeys) {
   if ($key.UninstallString -match '^(?:"?)(.+?unins\d+\.exe)(?:"?).*$') {
@@ -20,7 +20,7 @@ foreach ($key in $uninstallKeys) {
   }
 }
 
-$fallbackUninstaller = Join-Path $env:LOCALAPPDATA 'Programs\auto-rb-recorder\unins000.exe'
+$fallbackUninstaller = Join-Path $env:LOCALAPPDATA 'Programs\SessionTape\unins000.exe'
 if (Test-Path $fallbackUninstaller) {
   $packageArgs = @{
     packageName    = $packageName

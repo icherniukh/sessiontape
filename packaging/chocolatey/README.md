@@ -1,14 +1,14 @@
 # Chocolatey
 
 This directory contains a staging Chocolatey community package for
-`auto-rb-recorder`.
+`sessiontape`.
 
 Build and test from Windows:
 
 ```powershell
-choco pack packaging\chocolatey\auto-rb-recorder\auto-rb-recorder.nuspec
-choco install auto-rb-recorder --source . --version 1.2.0 -y
-choco uninstall auto-rb-recorder -y
+choco pack packaging\chocolatey\sessiontape\sessiontape.nuspec
+choco install sessiontape --source . --version 1.2.0 -y
+choco uninstall sessiontape -y
 ```
 
 Before submitting to the Chocolatey Community Repository:
