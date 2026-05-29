@@ -1,6 +1,6 @@
 # Privacy Policy
 
-auto-rb-recorder does not send recordings, configuration, logs, analytics, telemetry, or personal information to the maintainer or to any third-party service.
+SessionTape does not send recordings, configuration, logs, analytics, telemetry, or personal information to the maintainer or to any third-party service.
 
 The application runs locally on the user's computer. It records audio from Rekordbox, writes recordings to the configured output directory, stores configuration in the user's application data directory, and may write local diagnostic logs when run in verbose mode.
 
