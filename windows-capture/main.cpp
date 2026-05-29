@@ -69,7 +69,7 @@ public:
 };
 
 void PrintHelp() {
-    std::cerr << "Usage: rb-capture-win.exe --pid <PID> [--sample-rate <RATE>]\n";
+    std::cerr << "Usage: sessiontape-capture-win.exe --pid <PID> [--sample-rate <RATE>]\n";
 }
 
 // Global state for IPC writer thread

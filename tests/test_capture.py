@@ -49,7 +49,7 @@ class TestAudioCapture(unittest.TestCase):
             mock_popen.assert_called_once()
             args = mock_popen.call_args[0][0]
             if sys.platform == "win32":
-                self.assertEqual(os.path.basename(args[0]), "rb-capture-win.exe")
+                self.assertEqual(os.path.basename(args[0]), "sessiontape-capture-win.exe")
                 self.assertIn("--pid", args)
             else:
                 self.assertEqual(os.path.basename(args[0]), "mac-capture")
@@ -109,7 +109,7 @@ class TestAudioCapture(unittest.TestCase):
         backend.start(12345, 48000)
 
         args, kwargs = mock_popen.call_args
-        self.assertEqual(os.path.basename(args[0][0]), "rb-capture-win.exe")
+        self.assertEqual(os.path.basename(args[0][0]), "sessiontape-capture-win.exe")
         self.assertEqual(args[0][1:], ["--pid", "12345", "--sample-rate", "48000"])
 
         if sys.platform == "win32":

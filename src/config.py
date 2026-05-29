@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 
 
-APP_DIR = "auto-rb-recorder"
+APP_DIR = "sessiontape"
 SUPPORTED_EXPORT_FORMATS = {"wav", "mp3"}
 
 
