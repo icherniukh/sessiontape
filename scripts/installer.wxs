@@ -1,5 +1,5 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="SessionTape" Manufacturer="Ivan Cherniukh" Version="$(var.AppVersion)" UpgradeCode="9b2d6a5d-1c3f-4e8c-a6a9-4b6a8a3a2a1a" Scope="perUser">
+  <Package Name="SessionTape" Manufacturer="SessionTape" Version="$(var.AppVersion)" UpgradeCode="9b2d6a5d-1c3f-4e8c-a6a9-4b6a8a3a2a1a" Scope="perUser">
     <MajorUpgrade DowngradeErrorMessage="A newer version of SessionTape is already installed." />
     <MediaTemplate EmbedCab="yes" />
 

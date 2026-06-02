@@ -7,7 +7,37 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          uv venv
+          source .venv/bin/activate
+          uv pip install pytest
+
+      - name: Run pytest
+        run: |
+          source .venv/bin/activate
+          uv run pytest tests/ -v
+
   build_release:
+    needs: test
     runs-on: macos-latest
     timeout-minutes: 10
     permissions:
@@ -59,11 +89,15 @@ jobs:
           cp config.default.toml release_package/
           cd release_package
           zip -r ../sessiontape-macos-universal.zip *
+          cd ..
+          shasum -a 256 sessiontape-macos-universal.zip > sessiontape-macos-universal.zip.sha256
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2.6.1
         with:
-          files: sessiontape-macos-universal.zip
+          files: |
+            sessiontape-macos-universal.zip
+            sessiontape-macos-universal.zip.sha256
           generate_release_notes: true
 
       - name: Update Homebrew Tap
@@ -77,6 +111,7 @@ jobs:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
   build_windows_release:
+    needs: test
     runs-on: windows-latest
     timeout-minutes: 10
     permissions:
@@ -114,9 +149,30 @@ jobs:
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: 1
 
+      - name: Generate Checksums
+        shell: pwsh
+        run: |
+          Get-FileHash dist\sessiontape.msi -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  sessiontape.msi" } |
+            Set-Content dist\sessiontape.msi.sha256
+          if (Test-Path dist\sessiontape-setup.exe) {
+            Get-FileHash dist\sessiontape-setup.exe -Algorithm SHA256 |
+              ForEach-Object { "$($_.Hash)  sessiontape-setup.exe" } |
+              Set-Content dist\sessiontape-setup.exe.sha256
+          }
+
+      - name: Collect Release Assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          Copy-Item dist\sessiontape.msi release-assets\
+          Copy-Item dist\sessiontape.msi.sha256 release-assets\
+          if (Test-Path dist\sessiontape-setup.exe) {
+            Copy-Item dist\sessiontape-setup.exe release-assets\
+            Copy-Item dist\sessiontape-setup.exe.sha256 release-assets\
+          }
+
       - name: Upload Release
         uses: softprops/action-gh-release@v2.6.1
         with:
-          files: |
-            dist/sessiontape-setup.exe
-            dist/sessiontape.msi
+          files: release-assets/*

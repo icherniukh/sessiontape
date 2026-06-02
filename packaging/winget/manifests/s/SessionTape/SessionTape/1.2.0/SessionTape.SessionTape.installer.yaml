@@ -1,6 +1,6 @@
-PackageIdentifier: IvanCherniukh.SessionTape
+PackageIdentifier: SessionTape.SessionTape
 PackageVersion: 1.2.0
-InstallerType: inno
+InstallerType: msi
 Platform:
 - Windows.Desktop
 MinimumOSVersion: 10.0.19041.0
@@ -12,7 +12,7 @@ UpgradeBehavior: install
 ReleaseDate: "2026-05-25"
 Installers:
 - Architecture: x64
-  InstallerUrl: https://github.com/icherniukh/sessiontape/releases/download/v1.2.0/sessiontape-setup.exe
-  InstallerSha256: C020C239B2B4845FC802C4C962AD6AD380A729C3C62AA841FC4A7240069A025
+  InstallerUrl: https://github.com/icherniukh/sessiontape/releases/download/v1.2.0/sessiontape.msi
+  InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
 ManifestType: installer
 ManifestVersion: 1.12.0

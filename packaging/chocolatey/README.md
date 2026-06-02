@@ -13,7 +13,7 @@ choco uninstall sessiontape -y
 
 Before submitting to the Chocolatey Community Repository:
 
-1. Build and publish a signed Windows installer.
+1. Build and publish a signed Windows MSI installer.
 2. Update the package version, release URL, and SHA256 checksum.
 3. Test install, upgrade, and uninstall in Windows Sandbox or a clean VM.
 

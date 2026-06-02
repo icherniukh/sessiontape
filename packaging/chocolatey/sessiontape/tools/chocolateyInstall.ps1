@@ -2,13 +2,13 @@ $ErrorActionPreference = 'Stop'
 
 $packageArgs = @{
   packageName    = 'sessiontape'
-  fileType       = 'exe'
-  url64bit       = 'https://github.com/icherniukh/sessiontape/releases/download/v1.2.0/sessiontape-setup.exe'
+  fileType       = 'msi'
+  url64bit       = 'https://github.com/icherniukh/sessiontape/releases/download/v1.2.0/sessiontape.msi'
   softwareName   = 'SessionTape*'
-  checksum64     = 'C020C239B2B4845FC802C4C962AD6AD380A729C3C62AA841FC4A7240069A025'
+  checksum64     = '0000000000000000000000000000000000000000000000000000000000000000'
   checksumType64 = 'sha256'
-  silentArgs     = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
-  validExitCodes = @(0)
+  silentArgs     = '/qn /norestart'
+  validExitCodes = @(0, 3010, 1641)
 }
 
 Install-ChocolateyPackage @packageArgs
