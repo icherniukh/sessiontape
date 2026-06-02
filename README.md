@@ -23,19 +23,37 @@ $msi = "$env:TEMP\sessiontape.msi"; Invoke-WebRequest -Uri "https://github.com/i
 
 The installer places the application in `%LOCALAPPDATA%\Programs\SessionTape` and the config in `%APPDATA%\sessiontape\config.toml`. It registers a Scheduled Task so it runs automatically at login.
 
+You can also run it manually from the command line:
+
+```bash
+sessiontape        # normal execution
+sessiontape -v     # verbose debug logging
+```
+
 #### Method 2: Manual Download
 1. Download the latest `sessiontape.msi` from the [Releases](https://github.com/icherniukh/sessiontape/releases) page.
 2. **Unblock the installer:** Right-click the downloaded `.msi` -> **Properties** -> Check **Unblock** -> **OK**.
 3. Run the installer. 
    > **Note:** If you still see "Windows protected your PC", click **More info** -> **Run anyway**.
 
-_(Optional)_ If you want to export recordings as MP3 instead of WAV, ensure `ffmpeg` is installed and available on your system `PATH`.
 
 ### macOS (Homebrew)
 
 ```bash
 brew tap icherniukh/tap
 brew install sessiontape
+```
+
+Run SessionTape in the foreground:
+
+```bash
+sessiontape
+```
+
+Start it as a background service at login:
+
+```bash
+brew services start sessiontape
 ```
 
 **Permissions (macOS 14+):**
@@ -54,23 +72,6 @@ uv pip install -e .
 
 ---
 
-## Usage
-
-### macOS Service
-```bash
-sessiontape                       # foreground
-brew services start sessiontape   # background (starts at login)
-```
-
-### Windows Service
-The Windows installer automatically registers a Scheduled Task to run the application in the background at login. You can also run it manually from the command line:
-```bash
-sessiontape        # normal execution
-sessiontape -v     # verbose debug logging
-```
-
----
-
 ## Configuration
 
 The application uses a configuration file to customize its behavior (such as output directory, silence thresholds, and export format).
@@ -80,6 +81,8 @@ The application uses a configuration file to customize its behavior (such as out
 - **macOS:** `~/Library/Application Support/sessiontape/config.toml` (you must create this manually)
 
 You can find a complete list of settings and their default values in the [`config.default.toml`](config.default.toml) file in this repository.
+
+If you want to export recordings as MP3 instead of WAV, ensure `ffmpeg` is installed and available on your system `PATH`.
 
 ---
 
