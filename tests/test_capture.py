@@ -24,6 +24,11 @@ class StubBackend:
         self.stopped_proc = proc
 
 
+class NoopStopBackend(StubBackend):
+    def stop(self, proc):
+        super().stop(proc)
+
+
 class TestAudioCapture(unittest.TestCase):
     def test_db_to_rms(self):
         rms = db_to_rms(-40.0)
@@ -96,6 +101,28 @@ class TestAudioCapture(unittest.TestCase):
             self.assertEqual(backend.started_with, (12345, 44100))
             cap.stop()
             self.assertIs(backend.stopped_proc, mock_proc)
+
+    @patch("src.capture.threading.Thread")
+    def test_stop_forces_cleanup_when_backend_leaves_process_running(self, mock_thread):
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, None, 0]
+        backend = NoopStopBackend(mock_proc)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            q = queue.Queue()
+            cap = AudioCapture(
+                pid=12345,
+                output_dir=tmpdir,
+                queue=q,
+                sample_rate=44100,
+                backend=backend,
+            )
+            cap.start()
+            cap.stop()
+
+        self.assertIs(backend.stopped_proc, mock_proc)
+        mock_proc.kill.assert_called_once()
+        mock_proc.wait.assert_called_once_with(timeout=2.0)
 
     @patch("src.backends.windows_capture.subprocess.Popen")
     def test_windows_backend_suppresses_window(self, mock_popen):

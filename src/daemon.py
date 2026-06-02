@@ -158,13 +158,13 @@ class RecorderDaemon:
                     if self._current_pid:
                         if self._restart_count >= 5:
                             log.critical(
-                                f"Capture helper died (exit code {event.exit_code}) and restart limit "
+                                f"Capture process exited (exit code {event.exit_code}) and restart limit "
                                 f"({self._restart_count}) reached. Giving up."
                             )
                         else:
                             self._restart_count += 1
                             log.warning(
-                                f"Capture helper died (exit code {event.exit_code}). "
+                                f"Capture process exited (exit code {event.exit_code}). "
                                 f"Restarting capture (attempt {self._restart_count})."
                             )
                             self._stop_capture(keep_pid=True)

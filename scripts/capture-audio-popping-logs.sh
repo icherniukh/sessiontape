@@ -10,7 +10,7 @@ HELPER="$ROOT_DIR/mac-capture/.build/debug/mac-capture"
 mkdir -p "$OUT_DIR"
 
 if [[ ! -x "$HELPER" ]]; then
-    echo "missing helper: $HELPER" >&2
+    echo "missing capture binary: $HELPER" >&2
     echo "build it first with: (cd $ROOT_DIR/mac-capture && swift build -c debug)" >&2
     exit 1
 fi
@@ -47,12 +47,11 @@ trap cleanup EXIT INT TERM
 
 RB_MAC_CAPTURE_DIAG=1 \
 RB_MAC_CAPTURE_LOG="$OUT_DIR/mac-capture.diag.log" \
-RB_MAC_CAPTURE_FILTER_MODE="${RB_MAC_CAPTURE_FILTER_MODE:-display}" \
 "$HELPER" "$RB_PID" 48000 \
     >"$OUT_DIR/mac-capture.raw" \
     2>"$OUT_DIR/mac-capture.stderr" &
 HELPER_PID=$!
-note "helper pid=$HELPER_PID started"
+note "capture pid=$HELPER_PID started"
 
 (
     set +e
@@ -67,7 +66,7 @@ note "helper pid=$HELPER_PID started"
         exit_code="exited"
     fi
     printf '%s\n' "$exit_code" >"$OUT_DIR/mac-capture.exitcode"
-    note "helper pid=$HELPER_PID no longer alive status=$exit_code"
+    note "capture pid=$HELPER_PID no longer alive status=$exit_code"
 ) &
 HELPER_WATCH_PID=$!
 

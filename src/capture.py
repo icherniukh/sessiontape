@@ -72,18 +72,18 @@ class AudioCapture:
                 break
             chunks_read += 1
             if chunks_read == 1:
-                log.debug("First PCM chunk received from capture helper")
+                log.debug("First PCM chunk received from capture process")
             self.recorder.process_chunk(chunk)
         exit_code = self._proc.poll() if self._proc else None
         if self.is_recording:
-            # Loop exited while is_recording=True — helper died without being asked to stop
+            # Loop exited while is_recording=True — process exited without being asked to stop
             log.warning(
-                f"[DIAG] Capture helper died unexpectedly after {chunks_read} chunks "
+                f"[DIAG] Capture process exited unexpectedly after {chunks_read} chunks "
                 f"(exit code: {exit_code})"
             )
             self.queue.put(CaptureDied(exit_code=exit_code))
         else:
-            log.info(f"Read loop exited after {chunks_read} chunks (helper exit code: {exit_code})")
+            log.info(f"Read loop exited after {chunks_read} chunks (capture exit code: {exit_code})")
 
     def _log_stderr(self) -> None:
         if not self._proc or not self._proc.stderr:
@@ -109,7 +109,7 @@ class AudioCapture:
         self.is_recording = True
         self.recorder.reset()
         self._proc = self.backend.start(self.pid, self.sample_rate)
-        log.info(f"Capture helper started (PID={self._proc.pid})")
+        log.info(f"Capture process started (PID={self._proc.pid})")
 
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
@@ -118,15 +118,27 @@ class AudioCapture:
             self._stderr_thread = threading.Thread(target=self._log_stderr, daemon=True)
             self._stderr_thread.start()
 
+    def _ensure_proc_stopped(self, proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:
+            return
+
+        log.warning("Capture process still running after backend.stop(); forcing cleanup")
+        proc.kill()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            log.error("Capture process did not exit after forced kill")
+
     def stop(self) -> None:
         if not self.is_recording:
             return
 
         self.is_recording = False
 
-        if self._proc:
-            self.backend.stop(self._proc)
-            self._proc = None
+        proc = self._proc
+        if proc:
+            self.backend.stop(proc)
+            self._ensure_proc_stopped(proc)
 
         if self._reader_thread:
             self._reader_thread.join(timeout=2.0)
@@ -136,4 +148,5 @@ class AudioCapture:
             self._stderr_thread.join(timeout=2.0)
             self._stderr_thread = None
 
+        self._proc = None
         self.recorder.finalize()

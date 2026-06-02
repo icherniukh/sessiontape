@@ -13,17 +13,55 @@ extension FileHandle: @retroactive TextOutputStream {
 
 private let diagnosticsEnabled = ProcessInfo.processInfo.environment["RB_MAC_CAPTURE_DIAG"] == "1"
 
+private func writeLogLine(_ line: String, to handle: FileHandle) {
+    handle.write(Data(line.utf8))
+}
+
+final class DiagnosticLogger {
+    private let lock = NSLock()
+    private let diagnosticHandle: FileHandle?
+
+    init() {
+        guard
+            let path = ProcessInfo.processInfo.environment["RB_MAC_CAPTURE_LOG"],
+            !path.isEmpty
+        else {
+            self.diagnosticHandle = nil
+            return
+        }
+
+        FileManager.default.createFile(atPath: path, contents: nil)
+        let handle = FileHandle(forWritingAtPath: path)
+        handle?.seekToEndOfFile()
+        self.diagnosticHandle = handle
+
+        if handle == nil {
+            writeLogLine("ERROR: Failed to open diagnostic log at \(path)\n", to: standardError)
+        }
+    }
+
+    func log(level: String, message: String) {
+        let line = "\(level): \(message)\n"
+        lock.lock()
+        defer { lock.unlock() }
+        writeLogLine(line, to: standardError)
+        diagnosticHandle?.write(Data(line.utf8))
+    }
+}
+
+private let diagnosticLogger = DiagnosticLogger()
+
 func logError(_ message: String) {
-    print("ERROR: \(message)", to: &standardError)
+    diagnosticLogger.log(level: "ERROR", message: message)
 }
 
 func logInfo(_ message: String) {
-    print("INFO: \(message)", to: &standardError)
+    diagnosticLogger.log(level: "INFO", message: message)
 }
 
 func logDebug(_ message: String) {
     guard diagnosticsEnabled else { return }
-    print("DEBUG: \(message)", to: &standardError)
+    diagnosticLogger.log(level: "DEBUG", message: message)
 }
 
 private func osStatusDescription(_ status: OSStatus) -> String {
