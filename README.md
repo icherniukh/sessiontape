@@ -18,14 +18,14 @@ Windows code signing is provided by SignPath.io, certificate by SignPath Foundat
 Open PowerShell and paste this command to download and run the installer directly:
 
 ```powershell
-$exe = "$env:TEMP\sessiontape-setup.exe"; Invoke-WebRequest -Uri "https://github.com/icherniukh/sessiontape/releases/latest/download/sessiontape-setup.exe" -OutFile $exe; if ($?) { Start-Process $exe -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES' -Wait }
+$msi = "$env:TEMP\sessiontape.msi"; Invoke-WebRequest -Uri "https://github.com/icherniukh/sessiontape/releases/latest/download/sessiontape.msi" -OutFile $msi; if ($?) { Start-Process msiexec.exe -ArgumentList '/i', $msi, '/qn', '/norestart' -Wait }
 ```
 
 The installer places the application in `%LOCALAPPDATA%\Programs\SessionTape` and the config in `%APPDATA%\sessiontape\config.toml`. It registers a Scheduled Task so it runs automatically at login.
 
 #### Method 2: Manual Download
-1. Download the latest `sessiontape-setup.exe` from the [Releases](https://github.com/icherniukh/sessiontape/releases) page.
-2. **Unblock the installer:** Right-click the downloaded `.exe` -> **Properties** -> Check **Unblock** -> **OK**.
+1. Download the latest `sessiontape.msi` from the [Releases](https://github.com/icherniukh/sessiontape/releases) page.
+2. **Unblock the installer:** Right-click the downloaded `.msi` -> **Properties** -> Check **Unblock** -> **OK**.
 3. Run the installer. 
    > **Note:** If you still see "Windows protected your PC", click **More info** -> **Run anyway**.
 
@@ -94,14 +94,14 @@ You can find a complete list of settings and their default values in the [`confi
 
 ### Building Standalone Executables & Installers
 
-The following scripts handle the entire build process: compiling the native capture helper, bundling the Python daemon using PyInstaller, and (on Windows) creating the Inno Setup installer.
+The following scripts handle the entire build process: compiling the native capture helper, bundling the Python daemon using PyInstaller, and (on Windows) creating the WiX MSI installer plus an optional Inno Setup installer when available.
 
 **Windows**
 ```powershell
 uv pip install pyinstaller
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
 ```
-*Outputs to `dist\sessiontape.exe` and `dist\sessiontape-setup.exe`.*
+*Outputs to `dist\sessiontape.exe` and `dist\sessiontape.msi`, plus `dist\sessiontape-setup.exe` when Inno Setup is installed.*
 
 **macOS**
 ```bash
