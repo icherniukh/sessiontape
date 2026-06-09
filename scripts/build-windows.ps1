@@ -32,7 +32,7 @@ if (-not $iscc) {
 }
 
 if ($iscc) {
-    $version = (git describe --tags --abbrev=0 2>$null) -replace '^v', ''
+    $version = try { (& git describe --tags --abbrev=0 2>$null) -replace '^v', '' } catch { $null }
     if (-not $version) { $version = "dev" }
     Write-Host "Building Inno Setup installer (version $version)..."
     & $iscc "/DAppVersion=$version" "$ScriptDir\installer.iss"
@@ -43,7 +43,7 @@ if ($iscc) {
 
 $wixCmd = Get-Command wix -ErrorAction SilentlyContinue
 if ($wixCmd) {
-    $version = (git describe --tags --abbrev=0 2>$null) -replace '^v', ''
+    $version = try { (& git describe --tags --abbrev=0 2>$null) -replace '^v', '' } catch { $null }
     if (-not $version) { $version = "1.0.0" } # WiX requires a strict version format like x.y.z
     if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
         $version = "1.0.0" # Fallback if tag is not a valid MSI version

@@ -1,3 +1,6 @@
+# winget and Chocolatey manifests are validated in CI but submitted manually after a release.
+# This gates submission on: installer signing, clean-machine validation, and real checksum updates.
+# The MSI is the canonical Windows artifact for package manager references (not the .exe installer).
 name: Package Manager Validation
 
 on:
@@ -30,6 +33,7 @@ jobs:
       - name: Check staged package metadata
         run: |
           python3 - <<'PY'
+          import os
           import pathlib
           import re
           import sys
@@ -37,6 +41,9 @@ jobs:
 
           root = pathlib.Path(".")
           errors = []
+          # Zero-hash checks are only blocking on workflow_dispatch (actual submission).
+          # On PR/push they warn so placeholder metadata doesn't block development.
+          is_submission = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
           nuspec = root / "packaging/chocolatey/sessiontape/sessiontape.nuspec"
           ns = {"n": "http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd"}
@@ -53,6 +60,12 @@ jobs:
               errors.append("Chocolatey install script is missing url64bit")
           if not choco_sha:
               errors.append("Chocolatey install script is missing a 64-char SHA256 checksum")
+          if choco_sha and choco_sha.group(1).lower() == "0" * 64:
+              msg = "Chocolatey checksum64 is all-zero placeholder — replace with real SHA256 before release"
+              if is_submission:
+                  errors.append(msg)
+              else:
+                  print(f"WARNING: {msg}", file=sys.stderr)
 
           winget_dir = root / f"packaging/winget/manifests/s/SessionTape/SessionTape/{version}"
           installer = winget_dir / "SessionTape.SessionTape.installer.yaml"
@@ -77,6 +90,12 @@ jobs:
               errors.append("winget InstallerUrl does not match Chocolatey url64bit")
           if choco_sha and winget_sha != choco_sha.group(1):
               errors.append("winget InstallerSha256 does not match Chocolatey checksum64")
+          if winget_sha and winget_sha.lower() == "0" * 64:
+              msg = "winget InstallerSha256 is all-zero placeholder — replace with real SHA256 before release"
+              if is_submission:
+                  errors.append(msg)
+              else:
+                  print(f"WARNING: {msg}", file=sys.stderr)
           if choco_url and f"/v{version}/sessiontape.msi" not in choco_url.group(1):
               errors.append("Chocolatey URL does not point at the matching v{version} MSI")
           if choco_sha and choco_sha.group(1) not in verification:

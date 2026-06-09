@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from src.capture import AudioCapture
-from src.recorder_core import db_to_rms
+from src.recorder import db_to_rms, RecorderState
 
 
 class StubBackend:
@@ -52,7 +52,7 @@ class TestAudioCapture(unittest.TestCase):
             self.assertEqual(mock_thread.call_count, 2)
             self.assertEqual(mock_thread.return_value.start.call_count, 2)
             self.assertTrue(cap.is_recording)
-            self.assertEqual(cap.recorder.state, "PASSIVE")
+            self.assertEqual(cap.recorder.state, RecorderState.PASSIVE)
 
             # Stop delegates to backend and finalizes the recorder
             cap.recorder.finalize = MagicMock()
