@@ -94,6 +94,7 @@ class TestWindowsCaptureBackend(unittest.TestCase):
         self.assertEqual(cmd[1:], ["--pid", "12345", "--sample-rate", "48000"])
         self.assertEqual(kwargs.get("stdin"), subprocess.PIPE)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows-only")
     @patch("src.backends.windows_capture.subprocess.Popen")
     def test_start_suppresses_console_window(self, mock_popen):
         from src.backends.windows_capture import WindowsCaptureBackend
@@ -102,9 +103,8 @@ class TestWindowsCaptureBackend(unittest.TestCase):
         WindowsCaptureBackend().start(12345, 48000)
 
         _, kwargs = mock_popen.call_args
-        if sys.platform == "win32":
-            expected = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-            self.assertEqual(kwargs.get("creationflags"), expected)
+        expected = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        self.assertEqual(kwargs.get("creationflags"), expected)
 
     @patch("src.backends.windows_capture.subprocess.Popen")
     def test_stop_closes_stdin_for_graceful_shutdown(self, mock_popen):

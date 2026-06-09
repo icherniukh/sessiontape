@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch, MagicMock
 
 from src.capture import AudioCapture
+from src.backends.windows_capture import WindowsCaptureBackend
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -18,7 +19,6 @@ FAKE_WINDOWS_CAPTURE = str(FIXTURE_DIR / "fake_windows_capture.py")
 def _make_capture(tmpdir, q, **kwargs):
     """Create an AudioCapture that invokes the platform-appropriate fake helper."""
     if sys.platform == "win32":
-        from src.backends.windows_capture import WindowsCaptureBackend
         import subprocess as _sp
 
         class FakeWindowsBackend(WindowsCaptureBackend):
@@ -108,6 +108,47 @@ class TestAudioCaptureIntegration(unittest.TestCase):
 
             self.assertEqual(len(wav_paths), 1)
             self.assertEqual(wav_frame_count(wav_paths[0]), 9600)
+
+
+class TestStdinCloseReadLoopExit(unittest.TestCase):
+    def test_stop_via_stdin_close_terminates_read_loop_quickly(self):
+        """Closing stdin must terminate the read loop within ~2s (not the 5s kill fallback)."""
+        import subprocess as _sp
+
+        class ContinuousFakeBackend(WindowsCaptureBackend):
+            def start(self, pid: int, sample_rate: int) -> _sp.Popen:
+                return _sp.Popen(
+                    [sys.executable, FAKE_WINDOWS_CAPTURE,
+                     "--pid", str(pid), "--sample-rate", str(sample_rate),
+                     "--continuous"],
+                    stdin=_sp.PIPE,
+                    stdout=_sp.PIPE,
+                    stderr=_sp.DEVNULL,
+                )
+
+        with TemporaryDirectory() as tmpdir:
+            q = queue.Queue()
+            cap = AudioCapture(
+                pid=12345,
+                output_dir=tmpdir,
+                queue=q,
+                sample_rate=48000,
+                backend=ContinuousFakeBackend(),
+                export_format="wav",
+            )
+            cap.start()
+            # Wait for the read loop to start receiving data
+            wait_until(lambda: cap._proc is not None, timeout=2.0)
+            time.sleep(0.2)  # let it run briefly
+
+            t0 = time.time()
+            cap.stop()
+            elapsed = time.time() - t0
+
+            # If stdin-close path works: fake exits immediately -> read loop exits -> stop() returns fast
+            # If kill-fallback path taken: stop() takes ~5s
+            self.assertLess(elapsed, 3.0,
+                f"stop() took {elapsed:.1f}s — stdin-close shutdown path appears broken (kill fallback used)")
 
 
 if __name__ == "__main__":

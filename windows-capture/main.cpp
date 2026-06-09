@@ -49,6 +49,14 @@ class CActivateAudioInterfaceCompletionHandler :
     public RuntimeClass<RuntimeClassFlags<ClassicCom>, IActivateAudioInterfaceCompletionHandler, FtmBase>
 {
 public:
+    CActivateAudioInterfaceCompletionHandler() {
+        m_hActivateCompleted = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (m_hActivateCompleted == nullptr) {
+            std::cerr << "CreateEvent failed: " << GetLastError() << "\n";
+            m_initFailed = true;
+        }
+    }
+
     STDMETHOD(ActivateCompleted)(IActivateAudioInterfaceAsyncOperation* operation)
     {
         HRESULT hrActivate = S_OK;
@@ -59,8 +67,8 @@ public:
         {
             punkAudioClient->QueryInterface(IID_PPV_ARGS(&m_AudioClient));
         }
-        
-        SetEvent(m_hActivateCompleted);
+
+        if (m_hActivateCompleted) SetEvent(m_hActivateCompleted);
         return S_OK;
     }
 
@@ -69,7 +77,8 @@ public:
     }
 
     ComPtr<IAudioClient> m_AudioClient;
-    HANDLE m_hActivateCompleted = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    HANDLE m_hActivateCompleted = nullptr;
+    bool m_initFailed = false;
 };
 
 void PrintHelp() {
@@ -101,11 +110,19 @@ void WriterThread() {
         // Return 0 means an actual I/O error or the reader closed the pipe.
         size_t written = 0;
         size_t total = chunk.size();
+        bool writeError = false;
         while (written < total) {
             size_t w = fwrite(chunk.data() + written, sizeof(short), total - written, stdout);
-            if (w == 0) break;
+            if (w == 0) {
+                isRunning = false;
+                queueCV.notify_all();
+                writeError = true;
+                break;
+            }
             written += w;
         }
+
+        if (writeError) break;
 
         fflush(stdout);
     }
@@ -141,6 +158,7 @@ int main(int argc, char** argv) {
 
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
     HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+    if (hStdin == INVALID_HANDLE_VALUE || hStdin == nullptr) hStdin = nullptr;
 
     // Set stdout to binary mode.
     // Use default _IOFBF since we explicitly fflush in the writer thread.
@@ -148,11 +166,16 @@ int main(int argc, char** argv) {
     char stdoutBuffer[65536];
     setvbuf(stdout, stdoutBuffer, _IOFBF, sizeof(stdoutBuffer));
 
+    struct CoUninitGuard {
+        ~CoUninitGuard() { CoUninitialize(); }
+    };
+
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
         std::cerr << "CoInitializeEx failed: " << std::hex << hr << "\n";
         return 1;
     }
+    CoUninitGuard coinitGuard;
 
     AUDIOCLIENT_ACTIVATION_PARAMS params = {};
     params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
@@ -165,6 +188,10 @@ int main(int argc, char** argv) {
     prop.blob.pBlobData = (BYTE*)&params;
 
     auto handler = Make<CActivateAudioInterfaceCompletionHandler>();
+    if (handler->m_initFailed) {
+        std::cerr << "Failed to create activation event\n";
+        return 1;
+    }
     ComPtr<IActivateAudioInterfaceAsyncOperation> asyncOp;
 
     std::cerr << "Activating audio interface for PID " << targetPid << "...\n";
@@ -182,7 +209,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    WaitForSingleObject(handler->m_hActivateCompleted, INFINITE);
+    if (WaitForSingleObject(handler->m_hActivateCompleted, INFINITE) != WAIT_OBJECT_0) {
+        std::cerr << "WaitForSingleObject failed\n";
+        return 1;
+    }
 
     if (!handler->m_AudioClient) {
         std::cerr << "Failed to acquire IAudioClient\n";
@@ -243,9 +273,10 @@ int main(int argc, char** argv) {
         Sleep(20);
 
         // Detect parent process closing the stdin pipe (clean shutdown protocol)
-        if (GetFileType(hStdin) == FILE_TYPE_PIPE) {
+        if (hStdin && GetFileType(hStdin) == FILE_TYPE_PIPE) {
             DWORD avail = 0;
-            if (!PeekNamedPipe(hStdin, nullptr, 0, nullptr, &avail, nullptr)) {
+            if (!PeekNamedPipe(hStdin, nullptr, 0, nullptr, &avail, nullptr) &&
+                GetLastError() == ERROR_BROKEN_PIPE) {
                 break;
             }
         }
@@ -285,7 +316,7 @@ int main(int argc, char** argv) {
                 }
                 std::lock_guard<std::mutex> lock(queueMutex);
                 if (audioQueue.size() >= MAX_QUEUE_CHUNKS) audioQueue.pop();
-                audioQueue.push(std::move(pcmData));
+                audioQueue.push(pcmData);
             }
             
             queueCV.notify_one();
@@ -305,7 +336,6 @@ int main(int argc, char** argv) {
     }
 
     pAudioClient->Stop();
-    CoUninitialize();
 
     return 0;
 }

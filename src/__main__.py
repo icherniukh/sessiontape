@@ -27,6 +27,10 @@ class _DedupFilter(logging.Filter):
         if len(self._seen) > 500:
             cutoff = now - self._window
             self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
+            if len(self._seen) > 500:
+                # Hard cap: discard oldest entries
+                sorted_items = sorted(self._seen.items(), key=lambda x: x[1])
+                self._seen = dict(sorted_items[-500:])
         return True
 
 
@@ -46,11 +50,13 @@ def main():
 
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(fmt)
-    file_handler.addFilter(_DedupFilter())
 
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(fmt)
-    stream_handler.addFilter(_DedupFilter())
+
+    dedup = _DedupFilter()
+    file_handler.addFilter(dedup)
+    stream_handler.addFilter(dedup)
 
     log_queue: queue.Queue = queue.Queue()
     queue_handler = logging.handlers.QueueHandler(log_queue)
@@ -61,14 +67,12 @@ def main():
     listener = logging.handlers.QueueListener(
         log_queue, file_handler, stream_handler, respect_handler_level=True
     )
-    listener.start()
-
-    if os.path.exists(config_path):
-        config = Config.from_file(config_path)
-    else:
-        config = Config()
-
     try:
+        listener.start()
+        if os.path.exists(config_path):
+            config = Config.from_file(config_path)
+        else:
+            config = Config()
         daemon = RecorderDaemon(config)
         daemon.run()
     finally:

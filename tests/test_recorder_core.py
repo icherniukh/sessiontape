@@ -4,6 +4,7 @@ import os
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -94,6 +95,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
             self.assertTrue(recorder._raw_path.endswith(".raw"))
             recorder._raw_file.close()
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows-only")
     @patch("src.recorder_core.subprocess.run")
     @patch("src.recorder_core._find_executable", return_value="ffmpeg")
     def test_mp3_export_suppresses_window(self, mock_find, mock_run):
@@ -106,11 +108,8 @@ class TestPCMStreamRecorder(unittest.TestCase):
         )
         manager._convert_mp3("in.raw", "out.mp3")
 
-        import sys
-        import subprocess
         args, kwargs = mock_run.call_args
-        if sys.platform == "win32":
-            self.assertEqual(kwargs.get("creationflags"), getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        self.assertEqual(kwargs.get("creationflags"), subprocess.CREATE_NO_WINDOW)
 
     def test_mp3_config_produces_valid_mp3(self):
         if not shutil.which("ffmpeg"):
