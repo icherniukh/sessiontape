@@ -13,7 +13,9 @@ from unittest.mock import MagicMock, patch
 
 from src.config import Config
 from src.events import ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
-from src.recorder_core import ExportManager, PCMStreamRecorder, recover_orphaned_raw_files
+from src.exporter import ExportManager
+from src.recorder import PCMStreamRecorder, RecorderState
+from src.recording_store import recover_orphaned_raw_files
 
 
 def write_sine_raw(path: str, sample_rate: int, seconds: float = 0.5) -> None:
@@ -71,7 +73,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
             loud_chunk = b"\xFF\x7F" * 10
             recorder.process_chunk(loud_chunk)
 
-            self.assertEqual(recorder.state, "ACTIVE")
+            self.assertEqual(recorder.state, RecorderState.ACTIVE)
             self.assertIsNotNone(recorder._raw_file)
             self.assertIn("rb_session_", recorder._raw_path)
             self.assertIn("rb_session_", recorder._output_path)
@@ -96,8 +98,8 @@ class TestPCMStreamRecorder(unittest.TestCase):
             recorder._raw_file.close()
 
     @unittest.skipUnless(sys.platform == "win32", "Windows-only")
-    @patch("src.recorder_core.subprocess.run")
-    @patch("src.recorder_core._find_executable", return_value="ffmpeg")
+    @patch("src.exporter.subprocess.run")
+    @patch("src.exporter._find_executable", return_value="ffmpeg")
     def test_mp3_export_suppresses_window(self, mock_find, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
         manager = ExportManager(
@@ -193,7 +195,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
             recorder.finalize()
 
             export_manager.enqueue.assert_called_once_with(raw_path, output_path)
-            self.assertEqual(recorder.state, "PASSIVE")
+            self.assertEqual(recorder.state, RecorderState.PASSIVE)
 
     def test_finalize_discards_short_segment_below_min_duration(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -228,7 +230,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
             # Transition to ACTIVE with one loud chunk
             loud_chunk = b"\xFF\x7F" * (recorder.chunk_size // 2)
             recorder.process_chunk(loud_chunk)
-            self.assertEqual(recorder.state, "ACTIVE")
+            self.assertEqual(recorder.state, RecorderState.ACTIVE)
 
             # Feed 900 all-zero chunks — exactly at the threshold
             zero_chunk = b"\x00" * recorder.chunk_size
@@ -298,20 +300,20 @@ class TestPCMStreamRecorder(unittest.TestCase):
                 decay_tail=0,
             )
 
-            with patch("src.recorder_core.time.time") as mock_time:
+            with patch("src.recorder.time.time") as mock_time:
                 # Transition PASSIVE -> ACTIVE
                 mock_time.return_value = 100.0
                 loud_chunk = b"\xFF\x7F" * 10
                 recorder.process_chunk(loud_chunk)
 
-                self.assertEqual(recorder.state, "ACTIVE")
+                self.assertEqual(recorder.state, RecorderState.ACTIVE)
                 self.assertEqual(recorder.last_active_at, 100.0)
 
                 # Process another loud chunk in ACTIVE state
                 mock_time.return_value = 105.0
                 recorder.process_chunk(loud_chunk)
 
-                self.assertEqual(recorder.state, "ACTIVE")
+                self.assertEqual(recorder.state, RecorderState.ACTIVE)
                 self.assertEqual(recorder.last_active_at, 105.0)
 
             if recorder._raw_file:

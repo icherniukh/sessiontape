@@ -1,22 +1,17 @@
-import glob
 import logging
 import math
 import os
-import queue
-import shutil
-import subprocess
-import sys
-import threading
 import time
-import wave
 from array import array
 from collections import deque
-from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Callable, Optional
 
+from src.audio_format import AudioFormat
 from src.config import SUPPORTED_EXPORT_FORMATS
-from src.events import Event, ExportFailed, ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
+from src.events import Event, SegmentClosed, SegmentOpened
+from src.exporter import ExportManager
 
 log = logging.getLogger("sessiontape")
 
@@ -26,162 +21,9 @@ def db_to_rms(db: float) -> float:
     return 32768.0 * (10.0 ** (db / 20.0))
 
 
-def _find_executable(name: str) -> str:
-    if hasattr(sys, "_MEIPASS"):
-        bundle_path = os.path.join(sys._MEIPASS, name)
-        if os.path.exists(bundle_path):
-            return bundle_path
-        bundle_exe_path = os.path.join(sys._MEIPASS, name + ".exe")
-        if os.path.exists(bundle_exe_path):
-            return bundle_exe_path
-
-    path = shutil.which(name)
-    if path:
-        return path
-    # macOS LaunchAgents often lack standard interactive PATHs
-    for fallback in [
-        f"/opt/homebrew/bin/{name}",
-        f"/usr/local/bin/{name}",
-        f"/usr/bin/{name}",
-    ]:
-        if os.path.exists(fallback):
-            return fallback
-    return name
-
-
-@dataclass
-class _ExportJob:
-    raw_path: str
-    output_path: str
-    recovery: bool = False
-
-
-class ExportManager:
-    def __init__(
-        self,
-        sample_rate: int,
-        channels: int,
-        bytes_per_sample: int,
-        export_format: str,
-        event_sink: Optional[Callable[[Event], None]] = None,
-    ):
-        self.sample_rate = sample_rate
-        self.channels = channels
-        self.bytes_per_sample = bytes_per_sample
-        if not isinstance(export_format, str):
-            raise ValueError("export_format must be a string")
-        self.export_format = export_format.lower()
-        if self.export_format not in SUPPORTED_EXPORT_FORMATS:
-            supported = ", ".join(sorted(SUPPORTED_EXPORT_FORMATS))
-            raise ValueError(f"export_format must be one of: {supported}")
-        self.event_sink = event_sink
-        self._jobs: queue.Queue[Optional[_ExportJob]] = queue.Queue()
-        self._worker: Optional[threading.Thread] = None
-
-    def start(self) -> None:
-        if self._worker and self._worker.is_alive():
-            return
-        self._worker = threading.Thread(
-            target=self._run,
-            name="ExportManager",
-            daemon=False,
-        )
-        self._worker.start()
-
-    def enqueue(self, raw_path: str, output_path: str, recovery: bool = False) -> None:
-        self.start()
-        self._jobs.put(_ExportJob(raw_path=raw_path, output_path=output_path, recovery=recovery))
-
-    def shutdown(self) -> None:
-        if not self._worker:
-            return
-        self._jobs.put(None)
-        self._worker.join()
-        self._worker = None
-
-    def _emit(self, event: Event) -> None:
-        if self.event_sink:
-            self.event_sink(event)
-
-    def _run(self) -> None:
-        while True:
-            job = self._jobs.get()
-            if job is None:
-                return
-            self._convert(job)
-
-    def _convert(self, job: _ExportJob) -> None:
-        raw_path = job.raw_path
-        output_path = job.output_path
-        log.info(f"Converting {raw_path} to {output_path}")
-        self._emit(
-            ExportStarted(
-                raw_path=raw_path,
-                output_path=output_path,
-                recovery=job.recovery,
-            )
-        )
-        try:
-            if self.export_format == "mp3":
-                self._convert_mp3(raw_path, output_path)
-            else:
-                self._convert_wav(raw_path, output_path)
-        except Exception as exc:
-            log.exception(f"Failed conversion for {raw_path}")
-            self._emit(
-                ExportFailed(
-                    raw_path=raw_path,
-                    output_path=output_path,
-                    error=str(exc),
-                    recovery=job.recovery,
-                )
-            )
-            return
-
-        os.unlink(raw_path)
-        log.info(f"Finished conversion: {output_path}")
-        self._emit(
-            ExportFinished(
-                raw_path=raw_path,
-                output_path=output_path,
-                recovery=job.recovery,
-            )
-        )
-
-    def _convert_wav(self, raw_path: str, output_path: str) -> None:
-        with open(raw_path, "rb") as raw_file, wave.open(output_path, "wb") as wav_file:
-            wav_file.setnchannels(self.channels)
-            wav_file.setsampwidth(self.bytes_per_sample)
-            wav_file.setframerate(self.sample_rate)
-            while chunk := raw_file.read(1024 * 1024):
-                wav_file.writeframes(chunk)
-
-    def _convert_mp3(self, raw_path: str, output_path: str) -> None:
-        cmd = [
-            _find_executable("ffmpeg"),
-            "-y",
-            "-f",
-            "s16le",
-            "-ar",
-            str(self.sample_rate),
-            "-ac",
-            str(self.channels),
-            "-i",
-            raw_path,
-            "-c:a",
-            "libmp3lame",
-            "-b:a",
-            "320k",
-            output_path,
-        ]
-        
-        kwargs = {}
-        if sys.platform == "win32":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-            
-        result = subprocess.run(cmd, capture_output=True, **kwargs)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.decode(errors="ignore").strip())
+class RecorderState(Enum):
+    PASSIVE = "PASSIVE"
+    ACTIVE = "ACTIVE"
 
 
 class PCMStreamRecorder:
@@ -213,14 +55,10 @@ class PCMStreamRecorder:
         self.event_sink = event_sink
 
         self.chunk_duration = 0.1  # 100ms chunks
-        self.channels = 2
-        self.bytes_per_sample = 2  # s16le
-        self.chunk_size = int(
-            self.sample_rate
-            * self.chunk_duration
-            * self.channels
-            * self.bytes_per_sample
-        )
+        self.audio_fmt = AudioFormat(sample_rate, 2, 2)  # stereo s16le fixed
+        self.chunk_size = self.audio_fmt.chunk_size
+        self.channels = self.audio_fmt.channels
+        self.bytes_per_sample = self.audio_fmt.bytes_per_sample
 
         self.rms_threshold = db_to_rms(silence_threshold_db)
         self.silence_chunks_threshold = int(min_silence_duration / self.chunk_duration)
@@ -234,7 +72,7 @@ class PCMStreamRecorder:
             export_format=self.export_format,
         )
 
-        self.state = "PASSIVE"
+        self.state: RecorderState = RecorderState.PASSIVE
         self.ring_buffer = deque(maxlen=self.buffer_maxlen)
         self.silence_count = 0
         self._chunk_count = 0
@@ -249,7 +87,7 @@ class PCMStreamRecorder:
         self._raw_file = None
 
     def reset(self) -> None:
-        self.state = "PASSIVE"
+        self.state = RecorderState.PASSIVE
         self.ring_buffer.clear()
         self.silence_count = 0
         self._chunk_count = 0
@@ -273,7 +111,7 @@ class PCMStreamRecorder:
 
         # Detect sudden drop to near-zero while actively recording — tap may have broken.
         # Only meaningful in ACTIVE state; in PASSIVE, zeros are expected (music not playing).
-        if self.state == "ACTIVE":
+        if self.state == RecorderState.ACTIVE:
             if self._last_rms > self.rms_threshold * 10 and rms == 0:
                 log.warning(f"[DIAG] RMS dropped to zero at chunk #{self._chunk_count} (was {self._last_rms:.0f}) — possible tap failure")
             elif self._last_rms > self.rms_threshold * 100 and rms < self.rms_threshold:
@@ -295,7 +133,7 @@ class PCMStreamRecorder:
                 self._tap_broken_fired = True
                 if self.on_tap_broken:
                     self.on_tap_broken()
-            elif self.state == "ACTIVE" and self._consecutive_zero_chunks in (10, 50, 150):
+            elif self.state == RecorderState.ACTIVE and self._consecutive_zero_chunks in (10, 50, 150):
                 log.warning(
                     f"[DIAG] {self._consecutive_zero_chunks} consecutive all-zero chunks "
                     f"({self._consecutive_zero_chunks * self.chunk_duration:.0f}s) — "
@@ -304,7 +142,7 @@ class PCMStreamRecorder:
         else:
             self._consecutive_zero_chunks = 0
 
-        if self.state == "PASSIVE":
+        if self.state == RecorderState.PASSIVE:
             self.ring_buffer.append(chunk)
             if not is_silent:
                 buffered_chunks = list(self.ring_buffer)
@@ -312,7 +150,7 @@ class PCMStreamRecorder:
                     "Audio detected! Transitioning to ACTIVE. "
                     f"RMS={rms:.1f} > {self.rms_threshold:.1f}"
                 )
-                self.state = "ACTIVE"
+                self.state = RecorderState.ACTIVE
                 self.last_active_at = time.time()
                 self._open_new_file()
                 for buffered_chunk in buffered_chunks:
@@ -341,16 +179,16 @@ class PCMStreamRecorder:
                 else:
                     log.info("Continuous silence detected. Transitioning to PASSIVE.")
                     self._close_current_file()
-                    self.state = "PASSIVE"
+                    self.state = RecorderState.PASSIVE
                     self.last_active_at = time.time()
         else:
             self.silence_count = 0
             self.last_active_at = time.time()  # refresh on every real audio chunk
 
     def finalize(self) -> None:
-        if self.state == "ACTIVE":
+        if self.state == RecorderState.ACTIVE:
             self._close_current_file()
-            self.state = "PASSIVE"
+            self.state = RecorderState.PASSIVE
         if self._owns_export_manager:
             self.export_manager.shutdown()
 
@@ -424,54 +262,3 @@ class PCMStreamRecorder:
             return 0.0
         sum_squares = sum(sample * sample for sample in audio_samples)
         return math.sqrt(sum_squares / len(audio_samples))
-
-
-def recover_orphaned_raw_files(
-    output_dir: str,
-    sample_rate: int,
-    export_format: str,
-    export_manager: Optional[ExportManager] = None,
-) -> None:
-    if not os.path.exists(output_dir):
-        return
-
-    # Match both hidden (.rb_session...) and visible just in case
-    patterns = [os.path.join(output_dir, ".rb_session_*.raw"), os.path.join(output_dir, "*.raw")]
-    raw_files = set()
-    for p in patterns:
-        raw_files.update(glob.glob(p))
-    
-    if not raw_files:
-        return
-
-    log.info(f"Found {len(raw_files)} orphaned raw files. Starting recovery...")
-    exporter = export_manager or ExportManager(
-        sample_rate=sample_rate,
-        channels=2,
-        bytes_per_sample=2,
-        export_format=export_format,
-    )
-    
-    for raw_path in raw_files:
-        # Skip files touched in the last 30s — previous process may still be converting them
-        age = time.time() - os.path.getmtime(raw_path)
-        if age < 30:
-            log.info(f"Skipping recent raw file (age={age:.0f}s, likely in-flight): {raw_path}")
-            continue
-
-        size = os.path.getsize(raw_path)
-        if size == 0:
-            log.info(f"Deleting empty orphaned file: {raw_path}")
-            os.unlink(raw_path)
-            continue
-            
-        base = os.path.splitext(os.path.basename(raw_path))[0]
-        if base.startswith('.'):
-            base = base[1:]
-            
-        output_path = os.path.join(output_dir, f"{base}.{export_format}")
-        log.info(f"Recovering {raw_path} to {output_path}")
-        exporter.enqueue(raw_path, output_path, recovery=True)
-
-    if export_manager is None:
-        exporter.shutdown()
