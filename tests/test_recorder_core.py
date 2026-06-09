@@ -5,13 +5,14 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
 import wave
 from unittest.mock import MagicMock, patch
 
 from src.config import Config
 from src.events import ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
-from src.recorder_core import ExportManager, PCMStreamRecorder
+from src.recorder_core import ExportManager, PCMStreamRecorder, recover_orphaned_raw_files
 
 
 def write_sine_raw(path: str, sample_rate: int, seconds: float = 0.5) -> None:
@@ -124,7 +125,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
                 config_file.write(
                     "[recording]\n"
                     "sample_rate = 44100\n"
-                    f"output_dir = \"{tmpdir}\"\n"
+                    f"output_dir = \"{tmpdir.replace(os.sep, '/')}\"\n"
                     "export_format = \"mp3\"\n"
                 )
 
@@ -316,6 +317,27 @@ class TestPCMStreamRecorder(unittest.TestCase):
 
             if recorder._raw_file:
                 recorder._raw_file.close()
+
+class TestOrphanRecovery(unittest.TestCase):
+    def test_finds_dotfile_raw(self):
+        """glob('*.raw') does not match hidden .rb_session_*.raw files; explicit pattern required."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_path = os.path.join(tmpdir, ".rb_session_20240101_120000_000000.raw")
+            with open(raw_path, "wb") as f:
+                f.write(b"\x00\x01" * 100)
+            old_time = time.time() - 60
+            os.utime(raw_path, (old_time, old_time))
+
+            mock_manager = MagicMock()
+            recover_orphaned_raw_files(
+                output_dir=tmpdir,
+                sample_rate=48000,
+                export_format="wav",
+                export_manager=mock_manager,
+            )
+
+            mock_manager.enqueue.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

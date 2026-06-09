@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: SessionTape.SessionTape
 PackageVersion: 1.2.0
 PackageLocale: en-US
@@ -10,15 +11,15 @@ PackageUrl: https://github.com/icherniukh/sessiontape
 License: GPL-3.0-or-later
 LicenseUrl: https://github.com/icherniukh/sessiontape/blob/main/LICENSE
 Copyright: Copyright (C) 2026 Ivan Cherniukh
-ShortDescription: Automatically record Rekordbox DJ sets in the background.
-Description: SessionTape is an open-source desktop utility that runs in the background and records Pioneer Rekordbox audio sessions automatically. It detects when Rekordbox is playing, splits recordings around silence, and saves finished sessions locally.
+ShortDescription: Records Rekordbox audio output automatically.
+Description: SessionTape captures your Rekordbox audio output in the background, splits recordings around silence, and saves sessions as MP3 or WAV files.
 Moniker: sessiontape
 Tags:
 - audio
 - dj
 - mp3
 - recorder
-- rekordbox
+- Rekordbox
 - wav
 ReleaseNotesUrl: https://github.com/icherniukh/sessiontape/releases/tag/v1.2.0
 ManifestType: defaultLocale

@@ -64,6 +64,10 @@ public:
         return S_OK;
     }
 
+    ~CActivateAudioInterfaceCompletionHandler() {
+        if (m_hActivateCompleted) CloseHandle(m_hActivateCompleted);
+    }
+
     ComPtr<IAudioClient> m_AudioClient;
     HANDLE m_hActivateCompleted = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 };
@@ -85,36 +89,36 @@ void WriterThread() {
         {
             std::unique_lock<std::mutex> lock(queueMutex);
             queueCV.wait(lock, [] { return !audioQueue.empty() || !isRunning; });
-            
+
             if (!isRunning && audioQueue.empty()) break;
             if (audioQueue.empty()) continue;
-            
+
             chunk = std::move(audioQueue.front());
             audioQueue.pop();
         }
-        
+
+        // On Windows blocking pipes, fwrite blocks when the buffer is full (not returns 0).
+        // Return 0 means an actual I/O error or the reader closed the pipe.
         size_t written = 0;
         size_t total = chunk.size();
-        int retries = 0;
-        
-        while (written < total && retries < 5) {
+        while (written < total) {
             size_t w = fwrite(chunk.data() + written, sizeof(short), total - written, stdout);
-            if (w == 0) {
-                // If the OS pipe buffer is completely full, fwrite may return 0 or block.
-                // In a non-blocking context or partial write error, we retry.
-                Sleep(10);
-                retries++;
-                continue;
-            }
+            if (w == 0) break;
             written += w;
-            retries = 0;
         }
-        
-        // We let the OS buffer standard stdout, but we flush explicitly 
-        // to push data down the pipe. Since this thread is completely 
-        // decoupled from the audio thread, blocking on fflush is safe here!
+
         fflush(stdout);
     }
+}
+
+BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
+    if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT ||
+        dwCtrlType == CTRL_CLOSE_EVENT) {
+        isRunning = false;
+        queueCV.notify_all();
+        return TRUE;
+    }
+    return FALSE;
 }
 
 int main(int argc, char** argv) {
@@ -134,6 +138,9 @@ int main(int argc, char** argv) {
         PrintHelp();
         return 1;
     }
+
+    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+    HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
 
     // Set stdout to binary mode.
     // Use default _IOFBF since we explicitly fflush in the writer thread.
@@ -233,8 +240,15 @@ int main(int argc, char** argv) {
     std::vector<short> silence;
 
     while (isRunning) {
-        // Sleep for roughly half the buffer duration to avoid busy waiting
-        Sleep(20); 
+        Sleep(20);
+
+        // Detect parent process closing the stdin pipe (clean shutdown protocol)
+        if (GetFileType(hStdin) == FILE_TYPE_PIPE) {
+            DWORD avail = 0;
+            if (!PeekNamedPipe(hStdin, nullptr, 0, nullptr, &avail, nullptr)) {
+                break;
+            }
+        }
 
         hr = pCaptureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr)) break;
@@ -271,7 +285,7 @@ int main(int argc, char** argv) {
                 }
                 std::lock_guard<std::mutex> lock(queueMutex);
                 if (audioQueue.size() >= MAX_QUEUE_CHUNKS) audioQueue.pop();
-                audioQueue.push(pcmData);
+                audioQueue.push(std::move(pcmData));
             }
             
             queueCV.notify_one();

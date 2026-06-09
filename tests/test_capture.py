@@ -61,19 +61,25 @@ class TestAudioCapture(unittest.TestCase):
             self.assertTrue(cap.is_recording)
             self.assertEqual(cap.recorder.state, "PASSIVE")
 
-            # 3. Stop finalizes recorder and terminates process
+            # 3. Stop finalizes recorder and signals process to exit
             cap.recorder.finalize = MagicMock()
             cap.stop()
             cap.recorder.finalize.assert_called_once()
-            mock_proc.terminate.assert_called_once()
+            if sys.platform == "win32":
+                mock_proc.stdin.close.assert_called_once()
+            else:
+                mock_proc.terminate.assert_called_once()
             self.assertFalse(cap.is_recording)
 
-            # 4. Stop skips terminate if process already exited
+            # 4. Stop skips shutdown signal if process already exited
             mock_proc.reset_mock()
             mock_proc.poll.return_value = 0
             cap.start()
             cap.stop()
-            mock_proc.terminate.assert_not_called()
+            if sys.platform == "win32":
+                mock_proc.stdin.close.assert_not_called()
+            else:
+                mock_proc.terminate.assert_not_called()
 
     @patch("src.capture.threading.Thread")
     @patch("src.backends.macos_capture.subprocess.Popen")

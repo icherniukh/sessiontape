@@ -1,6 +1,6 @@
 # SessionTape
 
-Background daemon that automatically records Pioneer Rekordbox DJ sets by capturing process audio output.
+Background daemon that captures Rekordbox audio output and saves your DJ sets automatically.
 
 - **Silence detection** — pauses recording when no audio is playing
 - **Session splitting** — silence gaps create separate files
