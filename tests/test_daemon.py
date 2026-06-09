@@ -18,8 +18,8 @@ class TestRecorderDaemon(unittest.TestCase):
         daemon._start_capture(pid=12345)
 
         MockCapture.assert_called_once_with(
-            pid=12345, 
-            output_dir="/tmp/test_output", 
+            pid=12345,
+            output_dir="/tmp/test_output",
             queue=daemon._queue,
             sample_rate=48000,
             backend_name="auto",
@@ -29,6 +29,7 @@ class TestRecorderDaemon(unittest.TestCase):
             decay_tail=5,
             export_format='wav',
             export_manager=daemon._export_manager,
+            capture_debug=False,
         )
         MockCapture.return_value.start.assert_called_once()
 
