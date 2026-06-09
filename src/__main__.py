@@ -54,12 +54,9 @@ def main():
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(fmt)
 
-    dedup = _DedupFilter()
-    file_handler.addFilter(dedup)
-    stream_handler.addFilter(dedup)
-
     log_queue: queue.Queue = queue.Queue()
     queue_handler = logging.handlers.QueueHandler(log_queue)
+    queue_handler.addFilter(_DedupFilter())
 
     logging.basicConfig(level=level, handlers=[queue_handler])
 
