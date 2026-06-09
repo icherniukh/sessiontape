@@ -68,7 +68,7 @@ git clone https://github.com/icherniukh/sessiontape.git
 cd sessiontape
 uv pip install -e .
 ```
-*(Note: For this to work fully, you must also compile the native capture helpers for your platform. See the Development section below).*
+*(Note: For this to work fully, you must also compile the native capture process for your platform. See the Development section below).*
 
 ---
 
@@ -97,7 +97,7 @@ If you want to export recordings as MP3 instead of WAV, ensure `ffmpeg` is insta
 
 ### Building Standalone Executables & Installers
 
-The following scripts handle the entire build process: compiling the native capture helper, bundling the Python daemon using PyInstaller, and (on Windows) creating the WiX MSI installer plus an optional Inno Setup installer when available.
+The following scripts handle the entire build process: compiling the native capture process, bundling the Python daemon using PyInstaller, and (on Windows) creating the WiX MSI installer plus an optional Inno Setup installer when available.
 
 **Windows**
 ```powershell
@@ -130,9 +130,11 @@ uv run pytest tests/ -v
 | `src/capture.py` | Selects platform backend, feeds PCM to recorder |
 | `src/backends/macos_capture.py` | Spawns `mac-capture`, reads PCM from stdout |
 | `src/backends/windows_capture.py` | Spawns `sessiontape-capture-win.exe`, reads PCM from stdout |
-| `src/recorder_core.py` | Silence detection, raw session writing, WAV/MP3 export |
-| `windows-capture/main.cpp` | Native WASAPI process loopback helper (Windows) |
-| `mac-capture/` | Native CoreAudio process tap helper (macOS) |
+| `src/recorder.py` | Silence detection, state machine, raw session writing |
+| `src/exporter.py` | WAV/MP3 conversion queue (async) |
+| `src/recording_store.py` | Orphaned raw file recovery on startup |
+| `windows-capture/main.cpp` | WASAPI capture process — per-process audio loopback (Windows) |
+| `mac-capture/` | SCK capture process — per-process audio tap (macOS, Swift) |
 
 ## License
 
