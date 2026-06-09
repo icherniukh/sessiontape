@@ -56,6 +56,7 @@ class Config:
     export_format: str = "wav"
     process_name: str = "rekordbox"
     poll_interval: float = 2.0
+    capture_debug: bool = False
 
     def __post_init__(self) -> None:
         self.validate()
@@ -116,6 +117,9 @@ class Config:
             cfg.process_name = monitor["process_name"]
         if "poll_interval" in monitor:
             cfg.poll_interval = monitor["poll_interval"]
+        debug = data.get("debug", {})
+        if debug.get("capture_verbose"):
+            cfg.capture_debug = True
 
         cfg.validate()
         return cfg

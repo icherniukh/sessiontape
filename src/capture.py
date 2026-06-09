@@ -6,7 +6,8 @@ from typing import Optional
 from src.backends.base import CaptureBackend
 from src.events import CaptureDied, Event, EventQueue, TapBroken
 from src.platform import get_platform_backend
-from src.recorder_core import ExportManager, PCMStreamRecorder
+from src.exporter import ExportManager
+from src.recorder import PCMStreamRecorder
 
 log = logging.getLogger("sessiontape")
 capture_log = logging.getLogger("sessiontape.capture")
@@ -30,6 +31,7 @@ class AudioCapture:
         backend: CaptureBackend | None = None,
         backend_name: str | None = None,
         export_manager: ExportManager | None = None,
+        capture_debug: bool = False,
     ):
         self.pid = pid
         self.output_dir = output_dir
@@ -37,7 +39,7 @@ class AudioCapture:
         self.sample_rate = sample_rate
         self.source_name = source_name
         self.is_recording = False
-        self.backend = backend or get_platform_backend(backend_name)
+        self.backend = backend or get_platform_backend(backend_name, capture_debug=capture_debug)
 
         self.recorder = PCMStreamRecorder(
             output_dir=output_dir,
@@ -95,6 +97,8 @@ class AudioCapture:
             decoded = line.decode(errors="replace") if isinstance(line, bytes) else line
             if decoded.startswith("INFO: "):
                 capture_log.info(decoded[6:])
+            elif decoded.startswith("WARNING: "):
+                capture_log.warning(decoded[9:])
             elif decoded.startswith("ERROR: "):
                 capture_log.error(decoded[7:])
             elif decoded.startswith("DEBUG: "):

@@ -13,7 +13,8 @@ from src.events import (CaptureDied, EventQueue, ExportFailed, ExportFinished,
                         ProcessStopped, SegmentClosed, SegmentOpened,
                         ShutdownRequested, TapBroken)
 from src.process_monitor import ProcessMonitor
-from src.recorder_core import ExportManager, recover_orphaned_raw_files
+from src.exporter import ExportManager
+from src.recording_store import recover_orphaned_raw_files
 
 log = logging.getLogger("sessiontape")
 
@@ -78,6 +79,7 @@ class RecorderDaemon:
             decay_tail=self.config.decay_tail,
             export_format=self.config.export_format,
             export_manager=self._export_manager,
+            capture_debug=self.config.capture_debug,
         )
         self._capture.start()
 
@@ -156,7 +158,14 @@ class RecorderDaemon:
 
                 elif isinstance(event, CaptureDied):
                     if self._current_pid:
-                        if self._restart_count >= 5:
+                        if event.exit_code == 2:
+                            # Exit code 2 = configuration error (e.g. exclusive-mode device).
+                            # Retrying won't help; the user needs to change a setting.
+                            log.critical(
+                                "Capture process exited with a configuration error. "
+                                "Check the capture log for details."
+                            )
+                        elif self._restart_count >= 5:
                             log.critical(
                                 f"Capture helper died (exit code {event.exit_code}) and restart limit "
                                 f"({self._restart_count}) reached. Giving up."

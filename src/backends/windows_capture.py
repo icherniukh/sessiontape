@@ -3,16 +3,28 @@ import subprocess
 import sys
 
 from src.backends.base import CaptureBackend
-from src.recorder_core import _find_executable
+from src.exporter import _find_executable
+
+# WASAPI process loopback (AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK) requires COM activation
+# via ActivateAudioInterfaceAsync, which delivers its result through
+# IActivateAudioInterfaceCompletionHandler on a COM apartment thread. Hosting a COM apartment in
+# Python requires explicit MTA/STA thread affinity management via pythoncom/comtypes, which
+# conflicts with Python's threading model. A separate process gives clean COM lifetime and avoids
+# GIL contention on the audio capture hot path.
 
 log = logging.getLogger("sessiontape")
 
 
 class WindowsCaptureBackend(CaptureBackend):
+    def __init__(self, capture_debug: bool = False) -> None:
+        self._capture_debug = capture_debug
+
     def start(self, pid: int, sample_rate: int) -> subprocess.Popen:
         exe = _find_executable("sessiontape-capture-win.exe")
         cmd = [exe, "--pid", str(pid), "--sample-rate", str(sample_rate)]
-        log.info(f"Launching capture helper: {' '.join(cmd)}")
+        if self._capture_debug:
+            cmd.append("--debug")
+        log.info(f"Launching capture process: {' '.join(cmd)}")
         
         kwargs = {}
         if sys.platform == "win32":
