@@ -56,9 +56,6 @@ class ExportManager:
         event_sink: Optional[Callable[[Event], None]] = None,
     ):
         self.audio_fmt = AudioFormat(sample_rate, channels, bytes_per_sample)
-        self.sample_rate = self.audio_fmt.sample_rate
-        self.channels = self.audio_fmt.channels
-        self.bytes_per_sample = self.audio_fmt.bytes_per_sample
         if not isinstance(export_format, str):
             raise ValueError("export_format must be a string")
         self.export_format = export_format.lower()

@@ -118,7 +118,7 @@ class Config:
         if "poll_interval" in monitor:
             cfg.poll_interval = monitor["poll_interval"]
         debug = data.get("debug", {})
-        if debug.get("capture_verbose"):
+        if debug.get("capture_debug"):
             cfg.capture_debug = True
 
         cfg.validate()

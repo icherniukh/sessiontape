@@ -280,7 +280,7 @@ int main(int argc, char** argv) {
 
     LOG_INFO("searching for active audio session for PID " << targetPid);
     DeviceInfo devInfo;
-    for (int attempt = 0; attempt < 10 && devInfo.friendlyName.empty(); ++attempt) {
+    for (int attempt = 0; attempt < 10 && devInfo.mixFmt == nullptr; ++attempt) {
         if (attempt > 0) {
             LOG_DEBUG("no session found, retry " << attempt << "/10");
             // Sleep in short increments so stdin-close is detected promptly.
@@ -496,6 +496,8 @@ int main(int argc, char** argv) {
                          << friendlyName
                          << "\" > Advanced tab > uncheck "
                          << "\"Allow applications to take exclusive control of this device\"");
+                isRunning = false;
+                queueCV.notify_all();
             }
         }
     }
@@ -505,5 +507,5 @@ int main(int argc, char** argv) {
     queueCV.notify_one();
     if (writer.joinable()) writer.join();
     pAudioClient->Stop();
-    return 0;
+    return exclusiveWarnEmitted ? 2 : 0;
 }
