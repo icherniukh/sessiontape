@@ -6,7 +6,7 @@ from typing import Optional
 
 import psutil
 
-from src.capture import AudioCapture
+from src.capture import EXIT_FORMAT_MISMATCH, AudioCapture
 from src.config import Config
 from src.events import (
     CaptureDied,
@@ -172,7 +172,23 @@ class RecorderDaemon:
                         self._stop_capture()
 
                 elif isinstance(event, CaptureDied):
-                    if self._current_pid:
+                    if self._current_pid and event.exit_code == EXIT_FORMAT_MISMATCH:
+                        tap_rate = getattr(self._capture, "format_mismatch_rate", None)
+                        if isinstance(tap_rate, int):
+                            log.critical(
+                                f"Output device runs at {tap_rate} Hz; set "
+                                f"recording.sample_rate = {tap_rate} in config. "
+                                "Not restarting capture."
+                            )
+                        else:
+                            log.critical(
+                                "Capture tap sample rate differs from "
+                                "recording.sample_rate; set recording.sample_rate "
+                                "to the output device rate in config. "
+                                "Not restarting capture."
+                            )
+                        self._stop_capture(keep_pid=True)
+                    elif self._current_pid:
                         if self._restart_count >= 5:
                             log.critical(
                                 f"Capture process exited (exit code {event.exit_code}) and restart limit "

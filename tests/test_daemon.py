@@ -148,3 +148,33 @@ class TestRecorderDaemon(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFormatMismatch(unittest.TestCase):
+    @patch("src.daemon.AudioCapture")
+    @patch("src.daemon.ProcessMonitor")
+    @patch("src.daemon.recover_orphaned_raw_files")
+    @patch("src.daemon.signal.signal")
+    @patch("src.daemon._cleanup_stale_processes")
+    def test_exit_3_does_not_restart_and_logs_rate(
+        self, MockCleanup, MockSignal, MockRecover, MockMonitor, MockCapture
+    ):
+        daemon = RecorderDaemon(Config(output_dir="/tmp/test_output"))
+        daemon._queue.put(ProcessStarted(pid=12345))
+        daemon._queue.put(CaptureDied(exit_code=3))
+        daemon._queue.put(ShutdownRequested())
+
+        def side_effect_start(pid):
+            daemon._current_pid = pid
+            daemon._capture = MagicMock(format_mismatch_rate=44100)
+
+        daemon._start_capture = MagicMock(side_effect=side_effect_start)
+        daemon._stop_capture = MagicMock()
+
+        with self.assertLogs("sessiontape", level="CRITICAL") as logs:
+            daemon.run()
+
+        self.assertEqual(daemon._start_capture.call_count, 1)
+        self.assertEqual(daemon._restart_count, 0)
+        self.assertIn("runs at 44100 Hz", logs.output[0])
+        self.assertIn("recording.sample_rate = 44100", logs.output[0])

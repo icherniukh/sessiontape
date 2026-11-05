@@ -6,19 +6,6 @@ from src.recorder_core import _find_executable
 
 log = logging.getLogger("sessiontape")
 
-# 1 MiB pipe buffer reduces stdout backpressure on the Swift drain thread.
-_PIPE_BUF_SIZE = 1 << 20
-
-
-def _enlarge_pipe(fd: int, size: int = _PIPE_BUF_SIZE) -> None:
-    try:
-        import fcntl
-
-        fcntl.fcntl(fd, fcntl.F_SETPIPE_SZ, size)
-    except (ImportError, OSError, AttributeError):
-        pass
-
-
 class MacCaptureBackend(CaptureBackend):
     def __init__(
         self,
@@ -52,10 +39,7 @@ class MacCaptureBackend(CaptureBackend):
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=0,
         )
-        if proc.stdout:
-            _enlarge_pipe(proc.stdout.fileno())
         return proc
 
     def stop(self, proc: subprocess.Popen) -> None:

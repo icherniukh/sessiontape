@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -14,6 +15,12 @@ from src.recorder_core import ExportManager, PCMStreamRecorder
 
 log = logging.getLogger("sessiontape")
 capture_log = logging.getLogger("sessiontape.capture")
+
+
+_FORMAT_MISMATCH_RE = re.compile(r"FORMAT_MISMATCH tap=(\d+)")
+
+# mac-capture exit status for "tap sample rate != requested sample rate".
+EXIT_FORMAT_MISMATCH = 3
 
 
 class AudioCapture:
@@ -75,6 +82,8 @@ class AudioCapture:
         self._metrics_enabled = perf_metrics
         self._metrics_stop = threading.Event()
         self._last_read_at = 0.0
+        # Tap sample rate parsed from a FORMAT_MISMATCH stderr line, if any.
+        self.format_mismatch_rate: int | None = None
 
     @property
     def chunk_size(self) -> int:
@@ -101,12 +110,27 @@ class AudioCapture:
         self._metrics.ingest_native(parsed)
         return True
 
+    def _read_chunk(self, stream) -> bytes:
+        """Read exactly chunk_size bytes, looping over short reads.
+
+        Returns fewer bytes only at EOF; a partial final chunk is trimmed to a
+        whole number of s16le stereo frames (4 bytes), possibly to b"".
+        """
+        size = self.chunk_size
+        buf = bytearray()
+        while len(buf) < size:
+            part = stream.read(size - len(buf))
+            if not part:
+                return bytes(buf[: len(buf) - len(buf) % 4])
+            buf += part
+        return bytes(buf)
+
     def _read_loop(self) -> None:
         chunks_read = 0
         log.debug(f"Read loop started (chunk_size={self.chunk_size})")
         self._last_read_at = time.monotonic()
         while self._proc and self._proc.stdout:
-            chunk = self._proc.stdout.read(self.chunk_size)
+            chunk = self._read_chunk(self._proc.stdout)
             if not chunk:
                 break
             chunks_read += 1
@@ -122,9 +146,18 @@ class AudioCapture:
             process_ms = (time.perf_counter() - process_start) * 1000.0
             self._metrics.record_chunk(gap_ms=gap_ms, process_ms=process_ms)
 
-        exit_code = self._proc.poll() if self._proc else None
+        exit_code = None
+        if self._proc:
+            try:
+                exit_code = self._proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                exit_code = self._proc.poll()
         self._emit_capture_metric(force=True)
         if self.is_recording:
+            # Let the stderr thread drain so FORMAT_MISMATCH is parsed before
+            # the daemon sees CaptureDied.
+            if self._stderr_thread:
+                self._stderr_thread.join(timeout=1.0)
             log.warning(
                 f"[DIAG] Capture process exited unexpectedly after {chunks_read} chunks "
                 f"(exit code: {exit_code})"
@@ -143,6 +176,9 @@ class AudioCapture:
             if not line:
                 continue
             decoded = line.decode(errors="replace") if isinstance(line, bytes) else line
+            m = _FORMAT_MISMATCH_RE.search(decoded)
+            if m:
+                self.format_mismatch_rate = int(m.group(1))
             if self._ingest_native_metric(decoded):
                 continue
             if decoded.startswith("INFO: ") and self._ingest_native_metric(decoded[6:]):
