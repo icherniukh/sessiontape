@@ -3,7 +3,6 @@
 ## Known Issues / Not Yet Verified
 
 - **Full lifecycle with music + silence gap** — the splitter works on synthetic audio, but a real test with play→silence→play→quit hasn't been completed clean yet (Rekordbox startup cycle caused short captures in testing).
-- **LaunchAgent** — `install/dev.icherniukh.sessiontape.plist` and `scripts/install.sh` exist but haven't been tested with actual login-time auto-start.
 - **Long session stability** — not tested with multi-hour DJ sets. Disk space usage is ~184KB/s (660MB/hour).
 - **Terminal popups during tests** — Even with `CREATE_NO_WINDOW` flags, the test suite occasionally spawns empty terminal windows on Windows. Tracked in [Issue #21](https://github.com/icherniukh/sessiontape/issues/21).
 - **Permissions UX** — Screen Recording permission must be granted manually. No guided setup flow.
