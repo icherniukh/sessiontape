@@ -37,3 +37,19 @@ jobs:
         run: |
           source .venv/bin/activate
           uv run pytest tests/ -v
+
+  build-mac-capture:
+    runs-on: macos-15
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app || true
+
+      - name: Build Swift helper
+        run: |
+          swift --version
+          cd mac-capture && swift build -c release

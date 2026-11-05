@@ -7,9 +7,9 @@ capture-binary changes and evidence files have since been moved onto `main`.
 
 Current source of truth:
 
-- [main.swift](/Users/ivan/proj/sessiontape/mac-capture/Sources/mac-capture/main.swift)
-- [capture-audio-popping-logs.sh](/Users/ivan/proj/sessiontape/scripts/capture-audio-popping-logs.sh)
-- [captured_qt.log](/Users/ivan/proj/sessiontape/docs/evidence/captured_qt.log)
+- [main.swift](../mac-capture/Sources/mac-capture/main.swift)
+- [capture-audio-popping-logs.sh](../scripts/capture-audio-popping-logs.sh)
+- [captured_qt.log](../docs/evidence/captured_qt.log)
 
 ## Branch / Worktree State
 
@@ -37,7 +37,7 @@ So `mac-capture` is a later tactical pivot back to SCK despite earlier notes rej
 
 The Swift capture binary in:
 
-- [main.swift](/Users/ivan/proj/sessiontape/mac-capture/Sources/mac-capture/main.swift)
+- [main.swift](../mac-capture/Sources/mac-capture/main.swift)
 
 uses:
 
@@ -252,7 +252,7 @@ Interpretation:
 
 Current script:
 
-- [capture-audio-popping-logs.sh](/Users/ivan/proj/sessiontape/scripts/capture-audio-popping-logs.sh)
+- [capture-audio-popping-logs.sh](../scripts/capture-audio-popping-logs.sh)
 
 It captures:
 
