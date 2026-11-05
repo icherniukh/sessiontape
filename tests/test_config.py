@@ -1,6 +1,6 @@
-import unittest
-import tempfile
 import os
+import tempfile
+import unittest
 from unittest.mock import patch
 
 from src.config import (
@@ -26,7 +26,9 @@ class TestConfig(unittest.TestCase):
 
     def test_platform_config_path_windows(self):
         with patch("src.config.os.name", "nt"):
-            with patch.dict("src.config.os.environ", {"APPDATA": r"%APPDATA%"}, clear=False):
+            with patch.dict(
+                "src.config.os.environ", {"APPDATA": r"%APPDATA%"}, clear=False
+            ):
                 self.assertEqual(
                     platform_config_path(),
                     r"%APPDATA%\sessiontape\config.toml",
@@ -37,14 +39,14 @@ class TestConfig(unittest.TestCase):
 
     def test_load_from_toml(self):
         toml_content = (
-            '[recording]\n'
-            'sample_rate = 44100\n'
+            "[recording]\n"
+            "sample_rate = 44100\n"
             'capture_backend = "mac-capture"\n'
             'output_dir = "/tmp/my_sets"\n'
-            '\n'
-            '[trigger]\n'
-            'silence_threshold_db = -40\n'
-            'min_silence_duration = 20\n'
+            "\n"
+            "[trigger]\n"
+            "silence_threshold_db = -40\n"
+            "min_silence_duration = 20\n"
         )
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
             f.write(toml_content)
@@ -59,11 +61,27 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.min_silence_duration, 20)
         self.assertEqual(cfg.decay_tail, 5)
 
-    def test_rejects_invalid_export_format(self):
+    def test_load_capture_settings_from_toml(self):
         toml_content = (
-            '[recording]\n'
-            'export_format = "flac"\n'
+            "[capture]\n"
+            "perf_metrics = false\n"
+            "mac_capture_metrics = false\n"
+            "mac_capture_diag = true\n"
+            'mac_capture_log = "/tmp/mac-capture.log"\n'
         )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write(toml_content)
+            f.flush()
+            cfg = Config.from_file(f.name)
+
+        os.unlink(f.name)
+        self.assertFalse(cfg.perf_metrics)
+        self.assertFalse(cfg.mac_capture_metrics)
+        self.assertTrue(cfg.mac_capture_diag)
+        self.assertEqual(cfg.mac_capture_log, "/tmp/mac-capture.log")
+
+    def test_rejects_invalid_export_format(self):
+        toml_content = '[recording]\nexport_format = "flac"\n'
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
             f.write(toml_content)
             f.flush()
@@ -84,6 +102,7 @@ class TestConfig(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "poll_interval"):
             Config(poll_interval=0)
+
 
 if __name__ == "__main__":
     unittest.main()

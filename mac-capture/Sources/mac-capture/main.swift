@@ -1,8 +1,8 @@
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 import Foundation
 import ScreenCaptureKit
-
-var standardError = FileHandle.standardError
 
 extension FileHandle: @retroactive TextOutputStream {
     public func write(_ string: String) {
@@ -11,7 +11,106 @@ extension FileHandle: @retroactive TextOutputStream {
     }
 }
 
-private let diagnosticsEnabled = ProcessInfo.processInfo.environment["RB_MAC_CAPTURE_DIAG"] == "1"
+protocol AudioCaptureBackend: AnyObject, Sendable {
+    func start() async throws
+    func stop() async throws
+    func tickMetrics(force: Bool)
+    var isBroken: Bool { get }
+}
+
+extension AudioCaptureBackend {
+    func tickMetrics() {
+        tickMetrics(force: false)
+    }
+    var isBroken: Bool {
+        false
+    }
+}
+
+enum CaptureBackendMode: String {
+    case auto
+    case tap
+    case sck
+}
+
+private struct CaptureRuntimeOptions {
+    var diag = false
+    var metrics = true
+    var logPath: String?
+    var backend: CaptureBackendMode = .auto
+
+    static func parse(arguments: [String]) -> (pid: Int32, sampleRate: Int, options: Self)? {
+        var args = Array(arguments.dropFirst())
+        guard args.count >= 2,
+            let pid = Int32(args.removeFirst()),
+            let sampleRate = Int(args.removeFirst())
+        else {
+            return nil
+        }
+
+        var options = Self()
+        var index = 0
+        while index < args.count {
+            let flag = args[index]
+            switch flag {
+            case "--diag":
+                options.diag = true
+                index += 1
+            case "--no-metrics":
+                options.metrics = false
+                index += 1
+            case "--metrics":
+                options.metrics = true
+                index += 1
+            case "--backend":
+                index += 1
+                guard index < args.count else { return nil }
+                if let mode = CaptureBackendMode(rawValue: args[index].lowercased()) {
+                    options.backend = mode
+                } else {
+                    return nil
+                }
+                index += 1
+            case "--tap":
+                options.backend = .tap
+                index += 1
+            case "--sck":
+                options.backend = .sck
+                index += 1
+            case "--log":
+                index += 1
+                guard index < args.count else { return nil }
+                options.logPath = args[index]
+                index += 1
+            default:
+                return nil
+            }
+        }
+
+        options.applyEnvironmentFallback()
+        return (pid, sampleRate, options)
+    }
+
+    mutating func applyEnvironmentFallback() {
+        let env = ProcessInfo.processInfo.environment
+        if env["RB_MAC_CAPTURE_DIAG"] == "1" {
+            diag = true
+        }
+        if env["RB_MAC_CAPTURE_METRICS"] == "0" {
+            metrics = false
+        }
+        if let modeStr = env["RB_MAC_CAPTURE_BACKEND"]?.lowercased(),
+            let mode = CaptureBackendMode(rawValue: modeStr)
+        {
+            backend = mode
+        }
+        if let path = env["RB_MAC_CAPTURE_LOG"], !path.isEmpty {
+            logPath = path
+        }
+    }
+}
+
+nonisolated(unsafe) private var captureOptions = CaptureRuntimeOptions()
 
 private func writeLogLine(_ line: String, to handle: FileHandle) {
     handle.write(Data(line.utf8))
@@ -20,12 +119,10 @@ private func writeLogLine(_ line: String, to handle: FileHandle) {
 final class DiagnosticLogger {
     private let lock = NSLock()
     private let diagnosticHandle: FileHandle?
+    private var stderrHandle = FileHandle.standardError
 
-    init() {
-        guard
-            let path = ProcessInfo.processInfo.environment["RB_MAC_CAPTURE_LOG"],
-            !path.isEmpty
-        else {
+    init(logPath: String?) {
+        guard let path = logPath, !path.isEmpty else {
             self.diagnosticHandle = nil
             return
         }
@@ -36,7 +133,7 @@ final class DiagnosticLogger {
         self.diagnosticHandle = handle
 
         if handle == nil {
-            writeLogLine("ERROR: Failed to open diagnostic log at \(path)\n", to: standardError)
+            writeLogLine("ERROR: Failed to open diagnostic log at \(path)\n", to: stderrHandle)
         }
     }
 
@@ -44,12 +141,12 @@ final class DiagnosticLogger {
         let line = "\(level): \(message)\n"
         lock.lock()
         defer { lock.unlock() }
-        writeLogLine(line, to: standardError)
+        writeLogLine(line, to: stderrHandle)
         diagnosticHandle?.write(Data(line.utf8))
     }
 }
 
-private let diagnosticLogger = DiagnosticLogger()
+nonisolated(unsafe) private var diagnosticLogger = DiagnosticLogger(logPath: nil)
 
 func logError(_ message: String) {
     diagnosticLogger.log(level: "ERROR", message: message)
@@ -60,11 +157,11 @@ func logInfo(_ message: String) {
 }
 
 func logDebug(_ message: String) {
-    guard diagnosticsEnabled else { return }
+    guard captureOptions.diag else { return }
     diagnosticLogger.log(level: "DEBUG", message: message)
 }
 
-private func osStatusDescription(_ status: OSStatus) -> String {
+func osStatusDescription(_ status: OSStatus) -> String {
     let n = UInt32(bitPattern: status)
     let bytes = [
         Character(UnicodeScalar((n >> 24) & 0xff)!),
@@ -109,74 +206,11 @@ private struct InputAudioDescription: Equatable {
     }
 }
 
-final class OutputWriter {
-    private let fd = STDOUT_FILENO
-    private(set) var droppedWrites = 0
-    private(set) var broken = false
+private struct AudioBufferListView {
+    let pointer: UnsafeMutablePointer<AudioBufferList>
+    let buffers: UnsafeMutableAudioBufferListPointer
 
-    init() {
-        let currentFlags = fcntl(fd, F_GETFL)
-        if currentFlags >= 0 {
-            _ = fcntl(fd, F_SETFL, currentFlags | O_NONBLOCK)
-        }
-    }
-
-    func writeAll(_ data: UnsafeRawPointer, byteCount: Int) {
-        guard !broken else { return }
-
-        var totalWritten = 0
-        while totalWritten < byteCount {
-            let remaining = byteCount - totalWritten
-            let bytesWritten = write(fd, data.advanced(by: totalWritten), remaining)
-            if bytesWritten > 0 {
-                totalWritten += bytesWritten
-                continue
-            }
-
-            if bytesWritten < 0 && errno == EINTR {
-                continue
-            }
-
-            if bytesWritten < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
-                droppedWrites += 1
-                if droppedWrites <= 5 || droppedWrites % 100 == 0 {
-                    logError("stdout backpressure: dropped audio packet count=\(droppedWrites)")
-                }
-                return
-            }
-
-            broken = true
-            logError("Failed to write \(remaining) bytes to stdout errno=\(errno)")
-            exit(1)
-        }
-    }
-}
-
-final class FastPCMConverter {
-    private let sampleRate: Int
-    private var scratchSamples = [Int16]()
-    private var diagnosticBuffersLogged = 0
-
-    init(sampleRate: Int) {
-        self.sampleRate = sampleRate
-    }
-
-    func convertAndWrite(sampleBuffer: CMSampleBuffer, writer: OutputWriter) -> Bool {
-        let numSamples = CMSampleBufferGetNumSamples(sampleBuffer)
-        guard numSamples > 0 else { return true }
-
-        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else { return false }
-        let inputFormat = AVAudioFormat(cmAudioFormatDescription: formatDescription)
-        let desc = InputAudioDescription(inputFormat)
-
-        if diagnosticBuffersLogged < 5 {
-            logDebug("audio buffer #\(diagnosticBuffersLogged + 1): \(desc.summary)")
-            diagnosticBuffersLogged += 1
-        }
-
-        guard desc.channels == 2 else { return false }
-        guard Int(desc.sampleRate.rounded()) == sampleRate else { return false }
-
+    static func from(sampleBuffer: CMSampleBuffer) -> AudioBufferListView? {
         var bufferListSize = 0
         CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
             sampleBuffer,
@@ -188,12 +222,12 @@ final class FastPCMConverter {
             flags: 0,
             blockBufferOut: nil
         )
+        guard bufferListSize > 0 else { return nil }
 
         let rawListPtr = UnsafeMutableRawPointer.allocate(
             byteCount: bufferListSize,
             alignment: MemoryLayout<AudioBufferList>.alignment
         )
-        defer { rawListPtr.deallocate() }
 
         var retainedBlockBuffer: CMBlockBuffer?
         let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
@@ -207,33 +241,80 @@ final class FastPCMConverter {
             blockBufferOut: &retainedBlockBuffer
         )
         guard status == noErr else {
+            rawListPtr.deallocate()
             logError("CMSampleBufferGetAudioBufferList failed: \(osStatusDescription(status))")
-            return true
+            return nil
         }
 
-        let audioBuffers = UnsafeMutableAudioBufferListPointer(
-            rawListPtr.assumingMemoryBound(to: AudioBufferList.self)
+        let pointer = rawListPtr.assumingMemoryBound(to: AudioBufferList.self)
+        return AudioBufferListView(
+            pointer: pointer,
+            buffers: UnsafeMutableAudioBufferListPointer(pointer)
         )
+    }
 
+    func release() {
+        pointer.deallocate()
+    }
+}
+
+final class FastPCMConverter {
+    private let sampleRate: Int
+    private let scratchCapacity: Int
+    private let scratchSamples: UnsafeMutablePointer<Int16>
+    private var diagnosticBuffersLogged = 0
+
+    init(sampleRate: Int, maxFrames: Int = 16384) {
+        self.sampleRate = sampleRate
+        self.scratchCapacity = maxFrames * 2
+        self.scratchSamples = .allocate(capacity: self.scratchCapacity)
+    }
+
+    deinit {
+        scratchSamples.deallocate()
+    }
+
+    func convertAndEnqueue(sampleBuffer: CMSampleBuffer, queue: PCMOutboundQueue) -> Bool {
+        let numSamples = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard numSamples > 0 else { return true }
+
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
+            return false
+        }
+        let inputFormat = AVAudioFormat(cmAudioFormatDescription: formatDescription)
+        let desc = InputAudioDescription(inputFormat)
+
+        if diagnosticBuffersLogged < 5 {
+            logDebug("audio buffer #\(diagnosticBuffersLogged + 1): \(desc.summary)")
+            diagnosticBuffersLogged += 1
+        }
+
+        guard desc.channels == 2 else { return false }
+        guard Int(desc.sampleRate.rounded()) == sampleRate else { return false }
+
+        guard let bufferView = AudioBufferListView.from(sampleBuffer: sampleBuffer) else {
+            return true
+        }
+        defer { bufferView.release() }
+
+        let audioBuffers = bufferView.buffers
         switch (desc.commonFormat, desc.isInterleaved, audioBuffers.count) {
         case (.pcmFormatFloat32, false, 2):
-            return convertFloatDeinterleavedStereo(audioBuffers, frames: numSamples, writer: writer)
+            enqueueFloatDeinterleavedStereo(audioBuffers, frames: numSamples, queue: queue)
+            return true
         case (.pcmFormatFloat32, true, 1):
-            return convertFloatInterleavedStereo(audioBuffers[0], frames: numSamples, writer: writer)
+            enqueueFloatInterleavedStereo(audioBuffers[0], frames: numSamples, queue: queue)
+            return true
         case (.pcmFormatInt16, true, 1):
             let buffer = audioBuffers[0]
             guard let data = buffer.mData else { return true }
-            writer.writeAll(data, byteCount: Int(buffer.mDataByteSize))
+            queue.enqueue(bytes: data, byteCount: Int(buffer.mDataByteSize))
             return true
         default:
-            logDebug("Falling back to AVAudioConverter for unsupported format: \(desc.summary) buffers=\(audioBuffers.count)")
+            logDebug(
+                "Falling back to AVAudioConverter for unsupported format: \(desc.summary) buffers=\(audioBuffers.count)"
+            )
             return false
-        }
-    }
-
-    private func ensureScratchCapacity(_ sampleCount: Int) {
-        if scratchSamples.count < sampleCount {
-            scratchSamples = Array(repeating: 0, count: sampleCount)
         }
     }
 
@@ -244,51 +325,49 @@ final class FastPCMConverter {
         return Int16(scaled.rounded())
     }
 
-    private func convertFloatDeinterleavedStereo(
+    private func enqueueFloatDeinterleavedStereo(
         _ audioBuffers: UnsafeMutableAudioBufferListPointer,
         frames: Int,
-        writer: OutputWriter
-    ) -> Bool {
+        queue: PCMOutboundQueue
+    ) {
         guard
             let leftData = audioBuffers[0].mData,
             let rightData = audioBuffers[1].mData
-        else { return true }
+        else { return }
 
         let left = leftData.assumingMemoryBound(to: Float.self)
         let right = rightData.assumingMemoryBound(to: Float.self)
-        let sampleCount = frames * 2
-        ensureScratchCapacity(sampleCount)
+        let sampleCount = min(frames * 2, scratchCapacity)
 
-        for frame in 0..<frames {
+        for frame in 0..<(sampleCount / 2) {
             let base = frame * 2
             scratchSamples[base] = clampToInt16(left[frame])
             scratchSamples[base + 1] = clampToInt16(right[frame])
         }
 
-        scratchSamples.withUnsafeBytes { bytes in
-            writer.writeAll(bytes.baseAddress!, byteCount: sampleCount * MemoryLayout<Int16>.size)
-        }
-        return true
+        queue.enqueue(
+            bytes: scratchSamples,
+            byteCount: sampleCount * MemoryLayout<Int16>.size
+        )
     }
 
-    private func convertFloatInterleavedStereo(
+    func enqueueFloatInterleavedStereo(
         _ buffer: AudioBuffer,
         frames: Int,
-        writer: OutputWriter
-    ) -> Bool {
-        guard let data = buffer.mData else { return true }
+        queue: PCMOutboundQueue
+    ) {
+        guard let data = buffer.mData else { return }
         let input = data.assumingMemoryBound(to: Float.self)
-        let sampleCount = frames * 2
-        ensureScratchCapacity(sampleCount)
+        let sampleCount = min(frames * 2, scratchCapacity)
 
         for idx in 0..<sampleCount {
             scratchSamples[idx] = clampToInt16(input[idx])
         }
 
-        scratchSamples.withUnsafeBytes { bytes in
-            writer.writeAll(bytes.baseAddress!, byteCount: sampleCount * MemoryLayout<Int16>.size)
-        }
-        return true
+        queue.enqueue(
+            bytes: scratchSamples,
+            byteCount: sampleCount * MemoryLayout<Int16>.size
+        )
     }
 }
 
@@ -307,63 +386,39 @@ final class ConverterFallback {
         )!
     }
 
-    func convertAndWrite(sampleBuffer: CMSampleBuffer, writer: OutputWriter) {
+    func convertAndEnqueue(sampleBuffer: CMSampleBuffer, queue: PCMOutboundQueue) {
         let numSamples = CMSampleBufferGetNumSamples(sampleBuffer)
         guard numSamples > 0 else { return }
 
-        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
+            return
+        }
         let inputFormat = AVAudioFormat(cmAudioFormatDescription: formatDescription)
 
         if converter == nil || converter?.inputFormat != inputFormat {
             converter = AVAudioConverter(from: inputFormat, to: outputFormat)
-            logDebug("Created AVAudioConverter fallback input=\(InputAudioDescription(inputFormat).summary)")
+            logDebug(
+                "Created AVAudioConverter fallback input=\(InputAudioDescription(inputFormat).summary)"
+            )
         }
         guard let converter else { return }
 
-        guard let inputBuffer = AVAudioPCMBuffer(
-            pcmFormat: inputFormat,
-            frameCapacity: AVAudioFrameCount(numSamples)
-        ) else { return }
+        guard
+            let inputBuffer = AVAudioPCMBuffer(
+                pcmFormat: inputFormat,
+                frameCapacity: AVAudioFrameCount(numSamples)
+            )
+        else { return }
         inputBuffer.frameLength = AVAudioFrameCount(numSamples)
 
-        var bufferListSize = 0
-        CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: &bufferListSize,
-            bufferListOut: nil,
-            bufferListSize: 0,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: 0,
-            blockBufferOut: nil
-        )
-
-        let rawListPtr = UnsafeMutableRawPointer.allocate(
-            byteCount: bufferListSize,
-            alignment: MemoryLayout<AudioBufferList>.alignment
-        )
-        defer { rawListPtr.deallocate() }
-
-        var retainedBlockBuffer: CMBlockBuffer?
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: nil,
-            bufferListOut: rawListPtr.assumingMemoryBound(to: AudioBufferList.self),
-            bufferListSize: bufferListSize,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: 0,
-            blockBufferOut: &retainedBlockBuffer
-        )
-        guard status == noErr else {
-            logError("CMSampleBufferGetAudioBufferList fallback failed: \(osStatusDescription(status))")
+        guard let bufferView = AudioBufferListView.from(sampleBuffer: sampleBuffer) else {
             return
         }
+        defer { bufferView.release() }
 
-        let sourceListPointer = UnsafeMutableAudioBufferListPointer(
-            rawListPtr.assumingMemoryBound(to: AudioBufferList.self)
-        )
-        let destListPointer = UnsafeMutableAudioBufferListPointer(inputBuffer.mutableAudioBufferList)
+        let sourceListPointer = bufferView.buffers
+        let destListPointer = UnsafeMutableAudioBufferListPointer(
+            inputBuffer.mutableAudioBufferList)
         for i in 0..<min(sourceListPointer.count, destListPointer.count) {
             let srcBuf = sourceListPointer[i]
             let dstBuf = destListPointer[i]
@@ -374,10 +429,12 @@ final class ConverterFallback {
 
         let frameRatio = outputFormat.sampleRate / inputFormat.sampleRate
         let outFrameCapacity = AVAudioFrameCount(Double(numSamples) * frameRatio) + 1024
-        guard let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: outputFormat,
-            frameCapacity: outFrameCapacity
-        ) else { return }
+        guard
+            let outputBuffer = AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: outFrameCapacity
+            )
+        else { return }
 
         var error: NSError?
         var didProvideInput = false
@@ -401,35 +458,51 @@ final class ConverterFallback {
             return
         }
 
-        let outListPointer = UnsafeMutableAudioBufferListPointer(outputBuffer.mutableAudioBufferList)
+        let outListPointer = UnsafeMutableAudioBufferListPointer(
+            outputBuffer.mutableAudioBufferList)
         guard let data = outListPointer.first?.mData else { return }
-        writer.writeAll(data, byteCount: Int(outListPointer[0].mDataByteSize))
+        queue.enqueue(bytes: data, byteCount: Int(outListPointer[0].mDataByteSize))
     }
 }
 
-final class AppAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
+final class AppAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, AudioCaptureBackend, @unchecked Sendable {
     private var stream: SCStream?
     private let pid: pid_t
     private let sampleRate: Int
-    private let writer = OutputWriter()
+    private let outboundQueue: PCMOutboundQueue
+    private let drainThread: PCMOutboundDrainThread
     private let fastConverter: FastPCMConverter
     private let fallbackConverter: ConverterFallback
+    private let metrics = CaptureMetrics()
+    private let metricsEnabled: Bool
+
+    var isBroken: Bool { drainThread.broken }
 
     private var callbackCount = 0
     private var fallbackCount = 0
     private var slowCallbackCount = 0
+    private var queueDropLogCount = 0
 
-    init(pid: pid_t, sampleRate: Int) {
+    init(pid: pid_t, sampleRate: Int, metricsEnabled: Bool) {
         self.pid = pid
         self.sampleRate = sampleRate
+        self.metricsEnabled = metricsEnabled
+        let queue = PCMOutboundQueue()
+        self.outboundQueue = queue
+        self.drainThread = PCMOutboundDrainThread(queue: queue)
         self.fastConverter = FastPCMConverter(sampleRate: sampleRate)
         self.fallbackConverter = ConverterFallback(sampleRate: sampleRate)
         super.init()
     }
 
     func start() async throws {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-        logInfo("SCK shareable content: displays=\(content.displays.count) apps=\(content.applications.count) windows=\(content.windows.count)")
+        drainThread.start()
+
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: false)
+        logInfo(
+            "SCK shareable content: displays=\(content.displays.count) apps=\(content.applications.count) windows=\(content.windows.count)"
+        )
 
         guard let targetApp = content.applications.first(where: { $0.processID == self.pid }) else {
             throw NSError(
@@ -439,7 +512,9 @@ final class AppAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             )
         }
 
-        logInfo("Found target app: \(targetApp.applicationName) (PID: \(pid)) bundle=\(targetApp.bundleIdentifier)")
+        logInfo(
+            "Found target app: \(targetApp.applicationName) (PID: \(pid)) bundle=\(targetApp.bundleIdentifier)"
+        )
 
         guard let display = content.displays.first else {
             throw NSError(
@@ -457,11 +532,18 @@ final class AppAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         config.showsCursor = false
         config.sampleRate = sampleRate
         config.channelCount = 2
+        config.queueDepth = 8
+        config.width = 2
+        config.height = 2
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
         logDebug("Creating SCStream with display-scoped app filter")
         let newStream = SCStream(filter: filter, configuration: config, delegate: self)
-        let audioQueue = DispatchQueue(label: "dev.icherniukh.sessiontape.audioQueue", qos: .userInitiated)
-        try newStream.addStreamOutput(self, type: SCStreamOutputType.audio, sampleHandlerQueue: audioQueue)
+        let audioQueue = DispatchQueue(
+            label: "dev.icherniukh.sessiontape.audioQueue",
+            qos: .userInteractive)
+        try newStream.addStreamOutput(
+            self, type: SCStreamOutputType.audio, sampleHandlerQueue: audioQueue)
 
         self.stream = newStream
         do {
@@ -479,28 +561,59 @@ final class AppAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             self.stream = nil
             logInfo("ScreenCaptureKit audio stream stopped")
         }
+        drainThread.stop()
+        tickMetrics(force: true)
     }
 
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio, !writer.broken else { return }
+    func tickMetrics(force: Bool = false) {
+        guard metricsEnabled else { return }
+        metrics.emitIfDue(
+            bytesWritten: drainThread.bytesWritten,
+            droppedWrites: outboundQueue.droppedChunks,
+            emit: { logInfo($0) },
+            force: force
+        )
+    }
+
+    func stream(
+        _ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of type: SCStreamOutputType
+    ) {
+        guard type == .audio, !drainThread.broken else { return }
 
         let start = DispatchTime.now().uptimeNanoseconds
         callbackCount += 1
+        let dropsBefore = outboundQueue.droppedChunks
 
-        let convertedFast = fastConverter.convertAndWrite(sampleBuffer: sampleBuffer, writer: writer)
+        let convertedFast = fastConverter.convertAndEnqueue(
+            sampleBuffer: sampleBuffer, queue: outboundQueue)
         if !convertedFast {
             fallbackCount += 1
-            fallbackConverter.convertAndWrite(sampleBuffer: sampleBuffer, writer: writer)
+            fallbackConverter.convertAndEnqueue(sampleBuffer: sampleBuffer, queue: outboundQueue)
+        }
+
+        if outboundQueue.droppedChunks > dropsBefore {
+            queueDropLogCount += 1
+            if queueDropLogCount <= 5 || queueDropLogCount % 100 == 0 {
+                logError(
+                    "PCM queue overflow: dropped chunk count=\(outboundQueue.droppedChunks) depth=\(outboundQueue.depth)"
+                )
+            }
         }
 
         let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000.0
+        metrics.recordCallback(elapsedMs: elapsedMs, usedFallback: !convertedFast)
         if elapsedMs > 5.0 {
             slowCallbackCount += 1
             if slowCallbackCount <= 10 || slowCallbackCount % 50 == 0 {
-                logDebug("slow audio callback count=\(slowCallbackCount) elapsed_ms=\(String(format: "%.3f", elapsedMs)) fallback_count=\(fallbackCount) dropped_writes=\(writer.droppedWrites)")
+                logDebug(
+                    "slow audio callback count=\(slowCallbackCount) elapsed_ms=\(String(format: "%.3f", elapsedMs)) fallback_count=\(fallbackCount) queue_drops=\(outboundQueue.droppedChunks)"
+                )
             }
-        } else if diagnosticsEnabled && callbackCount <= 5 {
-            logDebug("audio callback #\(callbackCount) elapsed_ms=\(String(format: "%.3f", elapsedMs)) fallback_count=\(fallbackCount)")
+        } else if captureOptions.diag && callbackCount <= 5 {
+            logDebug(
+                "audio callback #\(callbackCount) elapsed_ms=\(String(format: "%.3f", elapsedMs)) fallback_count=\(fallbackCount)"
+            )
         }
     }
 
@@ -511,27 +624,91 @@ final class AppAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 }
 
 func main() async {
-    let args = ProcessInfo.processInfo.arguments
-    guard args.count == 3, let pid = Int32(args[1]), let sampleRate = Int(args[2]) else {
-        logError("Usage: mac-capture <PID> <SAMPLE_RATE>")
+    guard let parsed = CaptureRuntimeOptions.parse(arguments: ProcessInfo.processInfo.arguments)
+    else {
+        fputs(
+            "Usage: mac-capture <PID> <SAMPLE_RATE> [--backend tap|sck|auto] [--tap|--sck] [--diag] [--metrics|--no-metrics] [--log PATH]\n",
+            stderr
+        )
         exit(1)
     }
 
-    setbuf(stdout, nil)
-    logInfo("Starting mac-capture for PID \(pid) at \(sampleRate)Hz...")
+    captureOptions = parsed.options
+    diagnosticLogger = DiagnosticLogger(logPath: captureOptions.logPath)
 
-    let capture = AppAudioCapture(pid: pid, sampleRate: sampleRate)
+    let pid = parsed.pid
+    let sampleRate = parsed.sampleRate
+
+    setbuf(stdout, nil)
+    logInfo("Starting mac-capture for PID \(pid) at \(sampleRate)Hz (backend: \(captureOptions.backend.rawValue))...")
+
+    var capture: AudioCaptureBackend
+    switch captureOptions.backend {
+    case .tap:
+        if #available(macOS 14.2, *) {
+            capture = CoreAudioTapCapture(
+                pid: pid,
+                sampleRate: sampleRate,
+                metricsEnabled: captureOptions.metrics
+            )
+        } else {
+            logInfo("CoreAudio tap requires macOS 14.2+; falling back to ScreenCaptureKit")
+            capture = AppAudioCapture(
+                pid: pid,
+                sampleRate: sampleRate,
+                metricsEnabled: captureOptions.metrics
+            )
+        }
+    case .sck:
+        capture = AppAudioCapture(
+            pid: pid,
+            sampleRate: sampleRate,
+            metricsEnabled: captureOptions.metrics
+        )
+    case .auto:
+        if #available(macOS 14.2, *) {
+            capture = CoreAudioTapCapture(
+                pid: pid,
+                sampleRate: sampleRate,
+                metricsEnabled: captureOptions.metrics
+            )
+        } else {
+            capture = AppAudioCapture(
+                pid: pid,
+                sampleRate: sampleRate,
+                metricsEnabled: captureOptions.metrics
+            )
+        }
+    }
 
     do {
-        try await capture.start()
+        do {
+            try await capture.start()
+        } catch {
+            if captureOptions.backend == .auto && !(capture is AppAudioCapture) {
+                logError(
+                    "CoreAudio tap failed to start: \(captureErrorDescription(error)). Falling back to ScreenCaptureKit..."
+                )
+                let fallback = AppAudioCapture(
+                    pid: pid,
+                    sampleRate: sampleRate,
+                    metricsEnabled: captureOptions.metrics
+                )
+                try await fallback.start()
+                capture = fallback
+            } else {
+                throw error
+            }
+        }
 
+        let activeCapture = capture
         let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 
         let shutdown = {
             logInfo("Received shutdown signal...")
             Task {
-                try? await capture.stop()
+                try? await activeCapture.stop()
                 exit(0)
             }
         }
@@ -547,6 +724,12 @@ func main() async {
 
         while true {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if activeCapture.isBroken {
+                logError("Capture output stream broke (stdout pipe closed). Exiting cleanly...")
+                try? await activeCapture.stop()
+                exit(0)
+            }
+            activeCapture.tickMetrics()
         }
     } catch {
         logError("Failed to start capture: \(captureErrorDescription(error))")

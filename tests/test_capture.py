@@ -1,11 +1,12 @@
+import os
 import queue
 import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
-import os
 
 from src.capture import AudioCapture
+
 # from src.backends.macos_capture import AudioteeCaptureBackend
 from src.recorder_core import db_to_rms
 
@@ -43,7 +44,7 @@ class TestAudioCapture(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             q = queue.Queue()
-            
+
             # 1. Stop without start is no-op
             cap = AudioCapture(pid=12345, output_dir=tmpdir, queue=q, sample_rate=48000)
             cap.stop()
@@ -54,15 +55,17 @@ class TestAudioCapture(unittest.TestCase):
             mock_popen.assert_called_once()
             args = mock_popen.call_args[0][0]
             if sys.platform == "win32":
-                self.assertEqual(os.path.basename(args[0]), "sessiontape-capture-win.exe")
+                self.assertEqual(
+                    os.path.basename(args[0]), "sessiontape-capture-win.exe"
+                )
                 self.assertIn("--pid", args)
             else:
                 self.assertEqual(os.path.basename(args[0]), "mac-capture")
             self.assertIn("12345", args)
 
-            # Two threads are started: stderr logger + PCM reader
-            self.assertEqual(mock_thread.call_count, 2)
-            self.assertEqual(mock_thread.return_value.start.call_count, 2)
+            # Three threads are started: stderr logger + PCM reader + metrics ticker
+            self.assertEqual(mock_thread.call_count, 3)
+            self.assertEqual(mock_thread.return_value.start.call_count, 3)
             self.assertTrue(cap.is_recording)
             self.assertEqual(cap.recorder.state, "PASSIVE")
 
@@ -124,10 +127,42 @@ class TestAudioCapture(unittest.TestCase):
         mock_proc.kill.assert_called_once()
         mock_proc.wait.assert_called_once_with(timeout=2.0)
 
+    @patch("src.backends.macos_capture.subprocess.Popen")
+    def test_mac_capture_backend_passes_cli_flags(self, mock_popen):
+        from src.backends.macos_capture import MacCaptureBackend
+
+        mock_proc = MagicMock()
+        mock_popen.return_value = mock_proc
+
+        backend = MacCaptureBackend(
+            backend_mode="tap",
+            metrics=False,
+            diag=True,
+            log_path="/tmp/mac-capture.log",
+        )
+        backend.start(12345, 48000)
+
+        args = mock_popen.call_args[0][0]
+        self.assertEqual(os.path.basename(args[0]), "mac-capture")
+        self.assertEqual(
+            args[1:],
+            [
+                "12345",
+                "48000",
+                "--backend",
+                "tap",
+                "--diag",
+                "--no-metrics",
+                "--log",
+                "/tmp/mac-capture.log",
+            ],
+        )
+
     @patch("src.backends.windows_capture.subprocess.Popen")
     def test_windows_backend_suppresses_window(self, mock_popen):
-        from src.backends.windows_capture import WindowsCaptureBackend
         import subprocess
+
+        from src.backends.windows_capture import WindowsCaptureBackend
 
         mock_proc = MagicMock()
         mock_popen.return_value = mock_proc
@@ -140,7 +175,9 @@ class TestAudioCapture(unittest.TestCase):
         self.assertEqual(args[0][1:], ["--pid", "12345", "--sample-rate", "48000"])
 
         if sys.platform == "win32":
-            expected_flags = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            expected_flags = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(
+                subprocess, "CREATE_NO_WINDOW", 0x08000000
+            )
             self.assertEqual(kwargs.get("creationflags"), expected_flags)
 
 

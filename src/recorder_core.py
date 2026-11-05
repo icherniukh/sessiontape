@@ -9,14 +9,20 @@ import sys
 import threading
 import time
 import wave
-from array import array
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Optional
 
 from src.config import SUPPORTED_EXPORT_FORMATS
-from src.events import Event, ExportFailed, ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
+from src.events import (
+    Event,
+    ExportFailed,
+    ExportFinished,
+    ExportStarted,
+    SegmentClosed,
+    SegmentOpened,
+)
 
 log = logging.getLogger("sessiontape")
 
@@ -90,7 +96,9 @@ class ExportManager:
 
     def enqueue(self, raw_path: str, output_path: str, recovery: bool = False) -> None:
         self.start()
-        self._jobs.put(_ExportJob(raw_path=raw_path, output_path=output_path, recovery=recovery))
+        self._jobs.put(
+            _ExportJob(raw_path=raw_path, output_path=output_path, recovery=recovery)
+        )
 
     def shutdown(self) -> None:
         if not self._worker:
@@ -174,11 +182,11 @@ class ExportManager:
             "320k",
             output_path,
         ]
-        
+
         kwargs = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-            
+
         result = subprocess.run(cmd, capture_output=True, **kwargs)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.decode(errors="ignore").strip())
@@ -238,7 +246,9 @@ class PCMStreamRecorder:
         self.ring_buffer = deque(maxlen=self.buffer_maxlen)
         self.silence_count = 0
         self._chunk_count = 0
-        self.last_active_at: float = 0.0  # epoch time of last real audio chunk in ACTIVE state
+        self.last_active_at: float = (
+            0.0  # epoch time of last real audio chunk in ACTIVE state
+        )
         self._last_rms: float = 0.0  # for drop detection
         self._consecutive_zero_chunks: int = 0  # perfect zeros = tap broken signal
 
@@ -269,17 +279,23 @@ class PCMStreamRecorder:
         self._chunk_count += 1
         if self._chunk_count % 100 == 0:  # log every ~10s
             db = 20 * math.log10(rms / 32768.0) if rms > 0 else -math.inf
-            log.debug(f"[{self.state}] chunk #{self._chunk_count} RMS={rms:.0f} ({db:.1f} dB), threshold={self.rms_threshold:.0f}")
+            log.debug(
+                f"[{self.state}] chunk #{self._chunk_count} RMS={rms:.0f} ({db:.1f} dB), threshold={self.rms_threshold:.0f}"
+            )
 
         # Detect sudden drop to near-zero while actively recording — tap may have broken.
         # Only meaningful in ACTIVE state; in PASSIVE, zeros are expected (music not playing).
         if self.state == "ACTIVE":
             if self._last_rms > self.rms_threshold * 10 and rms == 0:
-                log.warning(f"[DIAG] RMS dropped to zero at chunk #{self._chunk_count} (was {self._last_rms:.0f}) — possible tap failure")
+                log.warning(
+                    f"[DIAG] RMS dropped to zero at chunk #{self._chunk_count} (was {self._last_rms:.0f}) — possible tap failure"
+                )
             elif self._last_rms > self.rms_threshold * 100 and rms < self.rms_threshold:
                 db_before = 20 * math.log10(self._last_rms / 32768.0)
                 db_now = 20 * math.log10(rms / 32768.0) if rms > 0 else -math.inf
-                log.warning(f"[DIAG] RMS dropped from {db_before:.1f} dB to {db_now:.1f} dB at chunk #{self._chunk_count}")
+                log.warning(
+                    f"[DIAG] RMS dropped from {db_before:.1f} dB to {db_now:.1f} dB at chunk #{self._chunk_count}"
+                )
         self._last_rms = rms
 
         # Perfect zeros (rms == 0.0 exactly) are a strong broken-tap signal.
@@ -287,15 +303,23 @@ class PCMStreamRecorder:
         if rms == 0.0:
             self._consecutive_zero_chunks += 1
             # 900 chunks = 90s @ 100ms/chunk. This replaces the old watchdog timer.
-            if self._consecutive_zero_chunks == 900 and not self._tap_broken_fired:
+            if (
+                self.state == "ACTIVE"
+                and self._consecutive_zero_chunks == 900
+                and not self._tap_broken_fired
+            ):
                 log.warning(
-                    f"[DIAG] 900 consecutive all-zero chunks (90s) — "
+                    f"[DIAG] 900 consecutive all-zero chunks (90s) while ACTIVE — "
                     f"tap definitely broken. Pushing TapBroken event."
                 )
                 self._tap_broken_fired = True
                 if self.on_tap_broken:
                     self.on_tap_broken()
-            elif self.state == "ACTIVE" and self._consecutive_zero_chunks in (10, 50, 150):
+            elif self.state == "ACTIVE" and self._consecutive_zero_chunks in (
+                10,
+                50,
+                150,
+            ):
                 log.warning(
                     f"[DIAG] {self._consecutive_zero_chunks} consecutive all-zero chunks "
                     f"({self._consecutive_zero_chunks * self.chunk_duration:.0f}s) — "
@@ -361,7 +385,7 @@ class PCMStreamRecorder:
             self.output_dir,
             f"rb_session_{timestamp}.{self.export_format}",
         )
-        self._raw_file = open(self._raw_path, "wb")
+        self._raw_file = open(self._raw_path, "wb", buffering=1024 * 1024)
         log.info(f"Opened new recording session: {self._raw_path}")
         self._emit(
             SegmentOpened(raw_path=self._raw_path, output_path=self._output_path)
@@ -378,9 +402,7 @@ class PCMStreamRecorder:
             return
 
         raw_size = os.path.getsize(self._raw_path)
-        duration = raw_size / (
-            self.sample_rate * self.channels * self.bytes_per_sample
-        )
+        duration = raw_size / (self.sample_rate * self.channels * self.bytes_per_sample)
         log.info(f"Raw capture finished: {raw_size} bytes ({duration:.1f}s)")
         output_path = self._output_path
 
@@ -419,11 +441,14 @@ class PCMStreamRecorder:
         self._output_path = None
 
     def _calculate_rms(self, chunk: bytes) -> float:
-        audio_samples = array("h", chunk)
-        if not audio_samples:
+        sample_count = len(chunk) // 2
+        if sample_count == 0:
             return 0.0
-        sum_squares = sum(sample * sample for sample in audio_samples)
-        return math.sqrt(sum_squares / len(audio_samples))
+        sum_squares = 0
+        for offset in range(0, sample_count * 2, 2):
+            sample = int.from_bytes(chunk[offset : offset + 2], "little", signed=True)
+            sum_squares += sample * sample
+        return math.sqrt(sum_squares / sample_count)
 
 
 def recover_orphaned_raw_files(
@@ -436,11 +461,14 @@ def recover_orphaned_raw_files(
         return
 
     # Match both hidden (.rb_session...) and visible just in case
-    patterns = [os.path.join(output_dir, ".rb_session_*.raw"), os.path.join(output_dir, "*.raw")]
+    patterns = [
+        os.path.join(output_dir, ".rb_session_*.raw"),
+        os.path.join(output_dir, "*.raw"),
+    ]
     raw_files = set()
     for p in patterns:
         raw_files.update(glob.glob(p))
-    
+
     if not raw_files:
         return
 
@@ -451,12 +479,14 @@ def recover_orphaned_raw_files(
         bytes_per_sample=2,
         export_format=export_format,
     )
-    
+
     for raw_path in raw_files:
         # Skip files touched in the last 30s — previous process may still be converting them
         age = time.time() - os.path.getmtime(raw_path)
         if age < 30:
-            log.info(f"Skipping recent raw file (age={age:.0f}s, likely in-flight): {raw_path}")
+            log.info(
+                f"Skipping recent raw file (age={age:.0f}s, likely in-flight): {raw_path}"
+            )
             continue
 
         size = os.path.getsize(raw_path)
@@ -464,11 +494,11 @@ def recover_orphaned_raw_files(
             log.info(f"Deleting empty orphaned file: {raw_path}")
             os.unlink(raw_path)
             continue
-            
+
         base = os.path.splitext(os.path.basename(raw_path))[0]
-        if base.startswith('.'):
+        if base.startswith("."):
             base = base[1:]
-            
+
         output_path = os.path.join(output_dir, f"{base}.{export_format}")
         log.info(f"Recovering {raw_path} to {output_path}")
         exporter.enqueue(raw_path, output_path, recovery=True)

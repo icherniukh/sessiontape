@@ -45,9 +45,7 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-RB_MAC_CAPTURE_DIAG=1 \
-RB_MAC_CAPTURE_LOG="$OUT_DIR/mac-capture.diag.log" \
-"$HELPER" "$RB_PID" 48000 \
+"$HELPER" "$RB_PID" 48000 --diag --log "$OUT_DIR/mac-capture.diag.log" \
     >"$OUT_DIR/mac-capture.raw" \
     2>"$OUT_DIR/mac-capture.stderr" &
 HELPER_PID=$!
@@ -107,7 +105,7 @@ Suggested steps:
 4. Stop this script with Ctrl-C.
 
 Captured files:
-- mac-capture.diag.log
+- mac-capture.diag.log (one CAPTURE line per second)
 - mac-capture.stderr
 - mac-capture.exitcode
 - mac-capture.raw

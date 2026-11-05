@@ -66,7 +66,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
                 decay_tail=0,
             )
 
-            loud_chunk = b"\xFF\x7F" * 10
+            loud_chunk = b"\xff\x7f" * 10
             recorder.process_chunk(loud_chunk)
 
             self.assertEqual(recorder.state, "ACTIVE")
@@ -76,7 +76,9 @@ class TestPCMStreamRecorder(unittest.TestCase):
             recorder._raw_file.close()
 
     def test_circular_buffer_limits(self):
-        recorder = PCMStreamRecorder(output_dir="/tmp", on_tap_broken=lambda: None, decay_tail=5.0)
+        recorder = PCMStreamRecorder(
+            output_dir="/tmp", on_tap_broken=lambda: None, decay_tail=5.0
+        )
         self.assertEqual(recorder.buffer_maxlen, 50)
         self.assertEqual(recorder.ring_buffer.maxlen, 50)
 
@@ -87,7 +89,9 @@ class TestPCMStreamRecorder(unittest.TestCase):
 
     def test_mp3_export_format(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            recorder = PCMStreamRecorder(output_dir=tmpdir, on_tap_broken=lambda: None, export_format="mp3")
+            recorder = PCMStreamRecorder(
+                output_dir=tmpdir, on_tap_broken=lambda: None, export_format="mp3"
+            )
             recorder._open_new_file()
             self.assertTrue(recorder._output_path.endswith(".mp3"))
             self.assertTrue(recorder._raw_path.endswith(".raw"))
@@ -105,11 +109,15 @@ class TestPCMStreamRecorder(unittest.TestCase):
         )
         manager._convert_mp3("in.raw", "out.mp3")
 
-        import sys
         import subprocess
+        import sys
+
         args, kwargs = mock_run.call_args
         if sys.platform == "win32":
-            self.assertEqual(kwargs.get("creationflags"), getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+            self.assertEqual(
+                kwargs.get("creationflags"),
+                getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+            )
 
     def test_mp3_config_produces_valid_mp3(self):
         if not shutil.which("ffmpeg"):
@@ -124,8 +132,8 @@ class TestPCMStreamRecorder(unittest.TestCase):
                 config_file.write(
                     "[recording]\n"
                     "sample_rate = 44100\n"
-                    f"output_dir = \"{tmpdir}\"\n"
-                    "export_format = \"mp3\"\n"
+                    f'output_dir = "{tmpdir}"\n'
+                    'export_format = "mp3"\n'
                 )
 
             cfg = Config.from_file(config_path)
@@ -186,7 +194,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
                 export_manager=export_manager,
             )
 
-            recorder.process_chunk(b"\xFF\x7F" * 10)
+            recorder.process_chunk(b"\xff\x7f" * 10)
             raw_path = recorder._raw_path
             output_path = recorder._output_path
 
@@ -206,13 +214,31 @@ class TestPCMStreamRecorder(unittest.TestCase):
                 export_manager=export_manager,
             )
 
-            recorder.process_chunk(b"\xFF\x7F" * 10)
+            recorder.process_chunk(b"\xff\x7f" * 10)
             raw_path = recorder._raw_path
 
             recorder.finalize()
 
             export_manager.enqueue.assert_not_called()
             self.assertFalse(os.path.exists(raw_path))
+
+    def test_on_tap_broken_not_called_in_passive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_callback = MagicMock()
+            recorder = PCMStreamRecorder(
+                output_dir=tmpdir,
+                on_tap_broken=mock_callback,
+                sample_rate=48000,
+                silence_threshold_db=-50,
+                decay_tail=0,
+            )
+
+            zero_chunk = b"\x00" * recorder.chunk_size
+            for _ in range(900):
+                recorder.process_chunk(zero_chunk)
+
+            self.assertEqual(recorder.state, "PASSIVE")
+            mock_callback.assert_not_called()
 
     def test_on_tap_broken_called_once_at_threshold(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -226,7 +252,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
             )
 
             # Transition to ACTIVE with one loud chunk
-            loud_chunk = b"\xFF\x7F" * (recorder.chunk_size // 2)
+            loud_chunk = b"\xff\x7f" * (recorder.chunk_size // 2)
             recorder.process_chunk(loud_chunk)
             self.assertEqual(recorder.state, "ACTIVE")
 
@@ -256,7 +282,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
                 event_sink=events.append,
             )
 
-            recorder.process_chunk(b"\xFF\x7F" * 10)
+            recorder.process_chunk(b"\xff\x7f" * 10)
             recorder.finalize()
 
             self.assertIsInstance(events[0], SegmentOpened)
@@ -289,6 +315,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
 
     def test_last_active_at_updates_on_non_silent_chunk(self):
         from unittest.mock import patch
+
         with tempfile.TemporaryDirectory() as tmpdir:
             recorder = PCMStreamRecorder(
                 output_dir=tmpdir,
@@ -301,7 +328,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
             with patch("src.recorder_core.time.time") as mock_time:
                 # Transition PASSIVE -> ACTIVE
                 mock_time.return_value = 100.0
-                loud_chunk = b"\xFF\x7F" * 10
+                loud_chunk = b"\xff\x7f" * 10
                 recorder.process_chunk(loud_chunk)
 
                 self.assertEqual(recorder.state, "ACTIVE")
@@ -316,6 +343,7 @@ class TestPCMStreamRecorder(unittest.TestCase):
 
             if recorder._raw_file:
                 recorder._raw_file.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,11 @@ gh issue create       # Create a new issue
 gh issue close <num>  # Close an issue
 ```
 
+## Agent Skills (macOS audio/capture)
+
+- **`axiom-macos`** — ScreenCaptureKit pipeline discipline (`skills/screencapturekit.md`). Installed in `.agents/skills/`.
+- **`macos-core-audio-io`** — HAL aggregates, replayd overload diagnosis, IOProc RT rules, `CAPTURE` metrics. Lives in `~/proj/agentify/skills/`, symlinked into `.agents/skills/`.
+
 ## Key Decisions & Pitfalls
 
 - **Product rename decision: SessionTape** — The project has been renamed from `auto-rb-recorder` to **SessionTape** before public winget/Chocolatey/App Store submissions harden the old identity. Public identifiers should use `sessiontape` where package-manager conventions allow it (CLI/binary/package/config dir), with display name `SessionTape`.
