@@ -3,6 +3,13 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 
+/// Thrown by `CoreAudioTapCapture.start()` (after teardown) when the tap's sample rate differs
+/// from the requested rate. main.swift maps it to `FORMAT_MISMATCH ...` on stderr + exit status 3.
+struct TapFormatMismatch: Error {
+    let tapRate: Int
+    let requestedRate: Int
+}
+
 @available(macOS 14.2, *)
 final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
     private let pid: pid_t
@@ -17,6 +24,9 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
     private var aggregateDeviceID: AudioObjectID = kAudioObjectUnknown
     private var ioProcID: AudioDeviceIOProcID?
     private var targetProcessObject: AudioObjectID = kAudioObjectUnknown
+    // Validated tap layout; written before AudioDeviceStart, read-only in the IO proc.
+    private var tapChannels = 2
+    private var tapInterleaved = true
 
     var isBroken: Bool { drainThread.broken }
 
@@ -218,11 +228,44 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         let formatStatus = AudioObjectGetPropertyData(
             newTapID, &formatAddress, 0, nil, &formatSize, &tapFormat
         )
-        if formatStatus == noErr {
-            logInfo(
-                "CoreAudio tap format: \(Int(tapFormat.mSampleRate))Hz, \(tapFormat.mChannelsPerFrame) channels, flags=0x\(String(tapFormat.mFormatFlags, radix: 16))"
+        guard formatStatus == noErr else {
+            try? await stop()
+            throw NSError(
+                domain: "CoreAudioTap",
+                code: Int(formatStatus),
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Reading kAudioTapPropertyFormat failed: \(osStatusDescription(formatStatus))"
+                ]
             )
         }
+        logInfo(
+            "CoreAudio tap format: \(Int(tapFormat.mSampleRate))Hz, \(tapFormat.mChannelsPerFrame) channels, flags=0x\(String(tapFormat.mFormatFlags, radix: 16))"
+        )
+
+        let tapRate = Int(tapFormat.mSampleRate.rounded())
+        if tapRate != sampleRate {
+            try? await stop()
+            throw TapFormatMismatch(tapRate: tapRate, requestedRate: sampleRate)
+        }
+        let isFloat32PCM =
+            tapFormat.mFormatID == kAudioFormatLinearPCM
+            && (tapFormat.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+            && tapFormat.mBitsPerChannel == 32
+        guard isFloat32PCM, tapFormat.mChannelsPerFrame == 1 || tapFormat.mChannelsPerFrame == 2
+        else {
+            try? await stop()
+            throw NSError(
+                domain: "CoreAudioTap",
+                code: 2,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Unsupported tap format: formatID=\(tapFormat.mFormatID) flags=0x\(String(tapFormat.mFormatFlags, radix: 16)) bits=\(tapFormat.mBitsPerChannel) channels=\(tapFormat.mChannelsPerFrame) (need Float32 PCM, 1 or 2 channels)"
+                ]
+            )
+        }
+        tapChannels = Int(tapFormat.mChannelsPerFrame)
+        tapInterleaved = (tapFormat.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
 
         var tapUIDAddress = AudioObjectPropertyAddress(
             mSelector: kAudioTapPropertyUID,
@@ -333,14 +376,9 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         guard !drainThread.broken else { return noErr }
         let start = DispatchTime.now().uptimeNanoseconds
 
-        let bufList = inputData.pointee
-        let buffer = bufList.mBuffers
-        guard buffer.mData != nil, buffer.mDataByteSize > 0 else { return noErr }
-
-        let sampleCount = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
-        let frames = sampleCount / 2
-        fastConverter.enqueueFloatInterleavedStereo(
-            buffer, frames: frames, queue: outboundQueue)
+        let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
+        fastConverter.enqueueTapFloat(
+            list, channels: tapChannels, interleaved: tapInterleaved, queue: outboundQueue)
 
         if metricsEnabled {
             let elapsedNs = DispatchTime.now().uptimeNanoseconds &- start
