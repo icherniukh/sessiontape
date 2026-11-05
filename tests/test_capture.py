@@ -183,3 +183,58 @@ class TestAudioCapture(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestChunkAssembly(unittest.TestCase):
+    def _run_child(self, write_size, writes, delay, bufsize):
+        import subprocess
+
+        code = (
+            "import sys,time\n"
+            f"for _ in range({writes}):\n"
+            f"    sys.stdout.buffer.write(b'\\x01\\x00'*{write_size // 2}); sys.stdout.buffer.flush()\n"
+            f"    time.sleep({delay})\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", code], stdout=subprocess.PIPE, bufsize=bufsize
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cap = AudioCapture(
+                pid=1,
+                output_dir=tmpdir,
+                queue=queue.Queue(),
+                sample_rate=48000,
+                backend=StubBackend(proc),
+                perf_metrics=False,
+            )
+            sizes, gaps = [], []
+            cap.recorder.process_chunk = lambda c: sizes.append(len(c))
+            cap._metrics.record_chunk = lambda gap_ms, process_ms: gaps.append(gap_ms)
+            cap._proc = proc
+            cap._read_loop()
+            return cap.chunk_size, sizes, gaps
+
+    def test_short_reads_are_assembled_into_full_chunks(self):
+        # 1920 B per 10 ms callback, unbuffered pipe (the bufsize=0 bug); 1002 is misaligned.
+        for write_size in (1920, 1002):
+            chunk_size, sizes, _ = self._run_child(write_size, 30, 0.005, bufsize=0)
+            self.assertEqual(chunk_size, 19200)
+            self.assertGreater(len(sizes), 1)
+            self.assertTrue(all(s == chunk_size for s in sizes[:-1]), sizes)
+            self.assertEqual(sizes[-1] % 4, 0)
+
+    def test_gap_ms_tracks_chunk_duration(self):
+        # 20 writes of 1920 B every 20 ms -> one 19200 B chunk per ~200 ms.
+        _, sizes, gaps = self._run_child(1920, 20, 0.02, bufsize=0)
+        self.assertEqual(sizes[:2], [19200, 19200])
+        self.assertGreater(gaps[1], 150.0)
+
+    def test_format_mismatch_line_sets_rate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cap = AudioCapture(
+                pid=1, output_dir=tmpdir, queue=queue.Queue(), backend=StubBackend(None)
+            )
+            cap._proc = MagicMock()
+            cap._proc.stderr = [b"FORMAT_MISMATCH tap=44100 requested=48000\n"]
+            cap._log_stderr()
+            self.assertEqual(cap.format_mismatch_rate, 44100)
