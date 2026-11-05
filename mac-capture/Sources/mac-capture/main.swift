@@ -325,7 +325,7 @@ final class FastPCMConverter {
         return Int16(scaled.rounded())
     }
 
-    private func enqueueFloatDeinterleavedStereo(
+    func enqueueFloatDeinterleavedStereo(
         _ audioBuffers: UnsafeMutableAudioBufferListPointer,
         frames: Int,
         queue: PCMOutboundQueue
@@ -368,6 +368,60 @@ final class FastPCMConverter {
             bytes: scratchSamples,
             byteCount: sampleCount * MemoryLayout<Int16>.size
         )
+    }
+
+    /// Mono Float32 -> duplicated into both stereo channels. RT-safe (preallocated scratch).
+    func enqueueFloatMonoAsStereo(
+        _ buffer: AudioBuffer,
+        frames: Int,
+        queue: PCMOutboundQueue
+    ) {
+        guard let data = buffer.mData else { return }
+        let input = data.assumingMemoryBound(to: Float.self)
+        let frameCount = min(frames, scratchCapacity / 2)
+
+        for frame in 0..<frameCount {
+            let s = clampToInt16(input[frame])
+            scratchSamples[frame * 2] = s
+            scratchSamples[frame * 2 + 1] = s
+        }
+
+        queue.enqueue(
+            bytes: scratchSamples,
+            byteCount: frameCount * 2 * MemoryLayout<Int16>.size
+        )
+    }
+
+    /// Walks a tap AudioBufferList whose layout was validated at start (Float32, 1 or 2 channels).
+    /// RT-safe: no allocation; buffers that do not match the validated layout are dropped.
+    func enqueueTapFloat(
+        _ list: UnsafeMutableAudioBufferListPointer,
+        channels: Int,
+        interleaved: Bool,
+        queue: PCMOutboundQueue
+    ) {
+        let floatSize = MemoryLayout<Float>.size
+        switch (channels, interleaved) {
+        case (2, true):
+            guard list.count >= 1, list[0].mNumberChannels == 2 else { return }
+            let buffer = list[0]
+            guard buffer.mData != nil, buffer.mDataByteSize > 0 else { return }
+            enqueueFloatInterleavedStereo(
+                buffer, frames: Int(buffer.mDataByteSize) / (floatSize * 2), queue: queue)
+        case (2, false):
+            guard list.count >= 2 else { return }
+            let bytes = min(list[0].mDataByteSize, list[1].mDataByteSize)
+            guard bytes > 0 else { return }
+            enqueueFloatDeinterleavedStereo(list, frames: Int(bytes) / floatSize, queue: queue)
+        case (1, _):
+            guard list.count >= 1 else { return }
+            let buffer = list[0]
+            guard buffer.mData != nil, buffer.mDataByteSize > 0 else { return }
+            enqueueFloatMonoAsStereo(
+                buffer, frames: Int(buffer.mDataByteSize) / floatSize, queue: queue)
+        default:
+            return
+        }
     }
 }
 
@@ -624,6 +678,9 @@ final class AppAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, AudioCa
 }
 
 func main() async {
+    // A closed stdout pipe must surface as EPIPE (drain thread sets `broken`), not kill the process.
+    signal(SIGPIPE, SIG_IGN)
+
     guard let parsed = CaptureRuntimeOptions.parse(arguments: ProcessInfo.processInfo.arguments)
     else {
         fputs(
@@ -684,6 +741,12 @@ func main() async {
     do {
         do {
             try await capture.start()
+        } catch let mismatch as TapFormatMismatch {
+            // Contract with the reader: exact line on stderr, exit status 3.
+            fputs(
+                "FORMAT_MISMATCH tap=\(mismatch.tapRate) requested=\(mismatch.requestedRate)\n",
+                stderr)
+            exit(3)
         } catch {
             if captureOptions.backend == .auto && !(capture is AppAudioCapture) {
                 logError(
