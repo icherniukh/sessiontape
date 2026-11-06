@@ -2,6 +2,7 @@ import queue
 import unittest
 from unittest.mock import MagicMock, patch
 
+from src.capture import EXIT_FORMAT_CHANGED, EXIT_FORMAT_MISMATCH
 from src.config import Config
 from src.daemon import RecorderDaemon
 from src.events import (
@@ -178,3 +179,34 @@ class TestFormatMismatch(unittest.TestCase):
         self.assertEqual(daemon._restart_count, 0)
         self.assertIn("runs at 44100 Hz", logs.output[0])
         self.assertIn("recording.sample_rate = 44100", logs.output[0])
+
+    @patch("src.daemon.AudioCapture")
+    @patch("src.daemon.ProcessMonitor")
+    @patch("src.daemon.recover_orphaned_raw_files")
+    @patch("src.daemon.signal.signal")
+    @patch("src.daemon._cleanup_stale_processes")
+    def test_exit_4_format_changed_restarts_capture(
+        self, MockCleanup, MockSignal, MockRecover, MockMonitor, MockCapture
+    ):
+        daemon = RecorderDaemon(Config(output_dir="/tmp/test_output"))
+        daemon._queue.put(ProcessStarted(pid=12345))
+        daemon._queue.put(CaptureDied(exit_code=EXIT_FORMAT_CHANGED))
+        daemon._queue.put(ShutdownRequested())
+
+        def side_effect_start(pid):
+            daemon._current_pid = pid
+            daemon._capture = MagicMock(format_mismatch_rate=None)
+
+        daemon._start_capture = MagicMock(side_effect=side_effect_start)
+        daemon._stop_capture = MagicMock()
+
+        with self.assertLogs("sessiontape", level="WARNING") as logs:
+            daemon.run()
+
+        self.assertEqual(EXIT_FORMAT_CHANGED, 4)
+        self.assertNotEqual(EXIT_FORMAT_CHANGED, EXIT_FORMAT_MISMATCH)
+        # Initial start plus one restart on the same PID.
+        self.assertEqual(daemon._start_capture.call_count, 2)
+        daemon._start_capture.assert_called_with(12345)
+        self.assertEqual(daemon._restart_count, 1)
+        self.assertTrue(any("tap format changed" in line for line in logs.output))

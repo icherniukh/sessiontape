@@ -21,6 +21,8 @@ _FORMAT_MISMATCH_RE = re.compile(r"FORMAT_MISMATCH tap=(\d+)")
 
 # mac-capture exit status for "tap sample rate != requested sample rate".
 EXIT_FORMAT_MISMATCH = 3
+# mac-capture exit status for "tap format changed mid-session". Restartable, unlike 3.
+EXIT_FORMAT_CHANGED = 4
 
 
 class AudioCapture:
