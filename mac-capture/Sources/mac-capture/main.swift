@@ -491,15 +491,11 @@ final class ConverterFallback {
         else { return }
 
         var error: NSError?
-        var didProvideInput = false
+        // convert(to:error:withInputFrom:) calls the block synchronously on this thread,
+        // so the unchecked-Sendable box is safe. Some SDKs mark the block @Sendable.
+        let input = OneShotConverterInput(inputBuffer)
         let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            if didProvideInput {
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-            didProvideInput = true
-            outStatus.pointee = .haveData
-            return inputBuffer
+            input.next(outStatus)
         }
 
         let result = converter.convert(to: outputBuffer, error: &error, withInputFrom: inputBlock)
@@ -801,3 +797,20 @@ func main() async {
 }
 
 await main()
+
+/// Hands one buffer to an AVAudioConverter input block, then reports no data.
+private final class OneShotConverterInput: @unchecked Sendable {
+    private var buffer: AVAudioPCMBuffer?
+
+    init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
+
+    func next(_ outStatus: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        guard let buffer else {
+            outStatus.pointee = .noDataNow
+            return nil
+        }
+        self.buffer = nil
+        outStatus.pointee = .haveData
+        return buffer
+    }
+}

@@ -42,6 +42,7 @@ jobs:
     # macos-15 = Xcode 16 / macOS 15 SDK (what release.yml's macos-latest uses today);
     # macos-26 = Xcode 26 SDK, which compiles the bundleIDs tap path.
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
