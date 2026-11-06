@@ -1,4 +1,4 @@
-"""Preferences window for auto-rb-recorder (macOS, PyObjC)."""
+"""Settings window for SessionTape (macOS, PyObjC)."""
 
 import os
 import shutil
@@ -11,7 +11,6 @@ from AppKit import (
     NSBackingStoreBuffered,
     NSBezelStyleRounded,
     NSButton,
-    NSFloatingWindowLevel,
     NSMakeRect,
     NSObject,
     NSOpenPanel,
@@ -21,7 +20,6 @@ from AppKit import (
     NSStepper,
     NSTextField,
     NSWindowStyleMaskClosable,
-    NSWindowStyleMaskMiniaturizable,
     NSWindowStyleMaskTitled,
 )
 
@@ -53,6 +51,10 @@ def _collapse_home(path: str) -> str:
 
 def _expand_path(display: str) -> str:
     return os.path.expanduser(display)
+
+
+def _format_number(value: float) -> str:
+    return f"{value:.0f}" if value == int(value) else f"{value:g}"
 
 
 def _alert_modal(message: str, info: str, *buttons: str) -> int:
@@ -105,13 +107,17 @@ class PreferencesWindowController(NSObject):
         self._controls: dict = {}
         self._slider_labels: dict[int, NSTextField] = {}
         self._stepper_meta: dict[int, tuple[NSTextField, str]] = {}
+        self._stepper_for_field: dict[int, NSStepper] = {}
         return self
 
     @objc.python_method
     def showWindow(self) -> None:
         if self._panel is None:
             self._build_panel()
-        NSApp.activateIgnoringOtherApps_(True)
+        if hasattr(NSApp, "activate"):
+            NSApp.activate()  # macOS 14+; activateIgnoringOtherApps_ is deprecated
+        else:
+            NSApp.activateIgnoringOtherApps_(True)
         self._panel.makeKeyAndOrderFront_(None)
 
     @objc.python_method
@@ -119,13 +125,13 @@ class PreferencesWindowController(NSObject):
         style = (
             NSWindowStyleMaskTitled
             | NSWindowStyleMaskClosable
-            | NSWindowStyleMaskMiniaturizable
         )
         self._panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, _W, _H), style, NSBackingStoreBuffered, False
         )
-        self._panel.setTitle_("auto-rb-recorder Preferences")
-        self._panel.setLevel_(NSFloatingWindowLevel)
+        self._panel.setTitle_("SessionTape Settings")
+        # Normal window level: a settings window must not float over Rekordbox.
+        self._panel.setHidesOnDeactivate_(False)
         self._panel.center()
 
         content = self._panel.contentView()
@@ -133,6 +139,7 @@ class PreferencesWindowController(NSObject):
 
         def row(label_text, control, y_pos):
             content.addSubview_(_label(label_text, _MARGIN, y_pos, _LABEL_W))
+            control.setAccessibilityLabel_(label_text)
             content.addSubview_(control)
 
         # Output Folder
@@ -141,6 +148,7 @@ class PreferencesWindowController(NSObject):
         choose_btn = _button("Choose\u2026", _CTRL_X + _CTRL_W - 62, y - 2, 60)
         choose_btn.setTarget_(self)
         choose_btn.setAction_(objc.selector(self.chooseFolderClicked_, signature=b"v@:@"))
+        choose_btn.setAccessibilityLabel_("Choose output folder")
         row("Output Folder", dir_field, y)
         content.addSubview_(choose_btn)
         self._controls["output_dir"] = dir_field
@@ -189,7 +197,11 @@ class PreferencesWindowController(NSObject):
             stepper.setValueWraps_(False)
             stepper.setTarget_(self)
             stepper.setAction_(objc.selector(self.stepperChanged_, signature=b"v@:@"))
+            stepper.setAccessibilityLabel_(label_text)
+            field.setTarget_(self)
+            field.setAction_(objc.selector(self.stepperFieldChanged_, signature=b"v@:@"))
             self._stepper_meta[id(stepper)] = (field, suffix)
+            self._stepper_for_field[id(field)] = stepper
             unit_lbl = _label(suffix, _CTRL_X + 86, y_pos, 40, 20)
             unit_lbl.setAlignment_(_ALIGN_LEFT)
             row(label_text, field, y_pos)
@@ -219,6 +231,7 @@ class PreferencesWindowController(NSObject):
         save_btn.setAction_(objc.selector(self.saveClicked_, signature=b"v@:@"))
 
         cancel_btn = _button("Cancel", _W - _MARGIN - 168, _MARGIN, 80)
+        cancel_btn.setKeyEquivalent_("\x1b")
         cancel_btn.setTarget_(self)
         cancel_btn.setAction_(objc.selector(self.cancelClicked_, signature=b"v@:@"))
 
@@ -250,7 +263,7 @@ class PreferencesWindowController(NSObject):
         ]:
             field, stepper = self._controls[key]
             stepper.setDoubleValue_(default)
-            field.setStringValue_(str(default))
+            field.setStringValue_(_format_number(default))
 
         self._controls["process_name"].setStringValue_(cfg.process_name)
 
@@ -262,10 +275,18 @@ class PreferencesWindowController(NSObject):
     def stepperChanged_(self, sender) -> None:
         meta = self._stepper_meta.get(id(sender))
         if meta:
-            field, suffix = meta
-            val = sender.doubleValue()
-            display = f"{val:.0f}{suffix}" if val == int(val) else f"{val}{suffix}"
-            field.setStringValue_(display)
+            field, _suffix = meta  # the unit is shown by its own label next to the stepper
+            field.setStringValue_(_format_number(sender.doubleValue()))
+
+    def stepperFieldChanged_(self, sender) -> None:
+        stepper = self._stepper_for_field.get(id(sender))
+        if stepper is None:
+            return
+        try:
+            stepper.setDoubleValue_(float(sender.stringValue().strip()))
+        except ValueError:
+            pass  # invalid text: fall back to the stepper's current value
+        sender.setStringValue_(_format_number(stepper.doubleValue()))  # clamped to the stepper range
 
     def chooseFolderClicked_(self, _sender) -> None:
         panel = NSOpenPanel.openPanel()
@@ -286,7 +307,7 @@ class PreferencesWindowController(NSObject):
         expanded = _expand_path(cfg.output_dir)
         if not os.path.exists(expanded):
             result = _alert_modal(
-                "Folder does not exist",
+                "Folder Doesn\u2019t Exist",
                 f'"{expanded}" does not exist. Create it now?',
                 "Create", "Cancel",
             )
@@ -306,7 +327,7 @@ class PreferencesWindowController(NSObject):
             )
             if not ffmpeg_found:
                 _alert_modal(
-                    "FFmpeg not found",
+                    "FFmpeg Not Found",
                     "FFmpeg is required for MP3 encoding but was not found. "
                     "Install it with: brew install ffmpeg",
                     "OK",
@@ -344,16 +365,13 @@ class PreferencesWindowController(NSObject):
         )
 
         for key in ("min_silence_duration", "min_segment_duration", "decay_tail", "poll_interval"):
-            field, _stepper = self._controls[key]
-            raw = field.stringValue().replace("s", "").strip()
-            try:
-                setattr(cfg, key, float(raw))
-            except ValueError:
-                pass
+            _field, stepper = self._controls[key]
+            # The field is kept in sync with the stepper, which clamps to the allowed range.
+            setattr(cfg, key, float(stepper.doubleValue()))
 
         proc = self._controls["process_name"].stringValue().strip()
         if not proc or " " in proc:
-            _alert_modal("Validation Error", "Process name must be non-empty and contain no spaces.", "OK")
+            _alert_modal("Invalid Process Name", "Enter the process name without spaces, for example \u201crekordbox\u201d.", "OK")
             return None
         cfg.process_name = proc
 

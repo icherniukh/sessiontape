@@ -1,4 +1,4 @@
-"""macOS menu bar application for auto-rb-recorder."""
+"""macOS menu bar application for SessionTape."""
 
 import os
 import subprocess
@@ -8,14 +8,24 @@ from typing import Optional
 
 import rumps
 
+APP_NAME = "SessionTape"
+
 from src.app_state import AppState
 from src.config import Config
 from src.daemon_bridge import DaemonBridge
 
 
+_REPO_URL = "https://github.com/icherniukh/sessiontape"
+
+
+def _about_credits():
+    from AppKit import NSAttributedString
+    return NSAttributedString.alloc().initWithString_(f"Automatic Rekordbox session recorder.\n{_REPO_URL}")
+
+
 class MenuBarApp(rumps.App):
     def __init__(self, config: Config):
-        super().__init__("auto-rb-recorder", quit_button=None)
+        super().__init__(APP_NAME, quit_button=None)
         self.config = config
         self._bridge = DaemonBridge(config)
         self._bridge.on_state_change = self._on_state_change
@@ -33,7 +43,7 @@ class MenuBarApp(rumps.App):
 
         self._tick_timer = rumps.Timer(self._update_tick, 1.0)
 
-    def _set_title(self, title: str) -> None:
+    def _set_title(self, title: Optional[str]) -> None:
         self.title = title
 
     def _build_menu(self) -> None:
@@ -52,7 +62,7 @@ class MenuBarApp(rumps.App):
         session_menu.add(self._segments_item)
         session_menu.add(self._last_saved_item)
 
-        quit_item = rumps.MenuItem("Quit auto-rb-recorder", callback=self._quit, key="q")
+        quit_item = rumps.MenuItem(f"Quit {APP_NAME}", callback=self._quit, key="q")
 
         self.menu = [
             self._status_item,
@@ -61,11 +71,11 @@ class MenuBarApp(rumps.App):
             None,
             rumps.MenuItem("Show Recordings Folder", callback=self._open_recordings_folder),
             None,
-            rumps.MenuItem("Preferences\u2026", callback=self._open_preferences, key=","),
+            rumps.MenuItem("Settings\u2026", callback=self._open_preferences, key=","),
             None,
             rumps.MenuItem("Launch at Login", callback=self._toggle_launch_at_login),
             None,
-            rumps.MenuItem("About auto-rb-recorder", callback=self._show_about),
+            rumps.MenuItem(f"About {APP_NAME}", callback=self._show_about),
             None,
             quit_item,
         ]
@@ -74,33 +84,34 @@ class MenuBarApp(rumps.App):
 
     def _apply_state(self, state: AppState) -> None:
         if state == AppState.IDLE:
-            self._set_icon("circle", red=False)
-            self._set_title("RB")
+            self._set_icon("circle", red=False, description="Idle")
             self._status_item.title = "Idle \u2014 waiting for Rekordbox"
             self._stop_tick()
 
         elif state == AppState.MONITORING:
-            self._set_icon("circle.dotted", red=False)
-            self._set_title("RB")
+            self._set_icon("circle.dotted", red=False, description="Monitoring")
             self._status_item.title = "Monitoring \u2014 listening\u2026"
             self._segments_item.title = f"Segments: {self._bridge.segment_count}"
             self._stop_tick()
 
         elif state == AppState.RECORDING:
-            self._set_icon("record.circle.fill", red=True)
-            self._set_title("REC")
+            self._set_icon("record.circle.fill", red=True, description="Recording")
             self._start_tick()
 
         elif state == AppState.ERROR:
-            self._set_icon("exclamationmark.triangle.fill", red=False)
-            self._set_title("ERR")
+            self._set_icon("exclamationmark.triangle.fill", red=False, description="Error")
             self._stop_tick()
 
-    def _set_icon(self, symbol_name: str, red: bool) -> None:
+    def _set_icon(self, symbol_name: str, red: bool, description: str) -> None:
+        # Text-only fallback when SF Symbols are unavailable, so the item never disappears.
+        self._set_title(None)
         try:
             from AppKit import NSColor, NSImage
-            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol_name, None)
+            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                symbol_name, f"{APP_NAME}: {description}"
+            )
             if image is None:
+                self._set_title(description)
                 return
             image.setTemplate_(not red)
             self.icon = image
@@ -108,7 +119,7 @@ class MenuBarApp(rumps.App):
             if btn:
                 btn.setContentTintColor_(NSColor.systemRedColor() if red else None)
         except Exception:
-            pass
+            self._set_title(description)
 
     def _start_tick(self) -> None:
         if not self._tick_running:
@@ -151,13 +162,13 @@ class MenuBarApp(rumps.App):
             "Recording Saved",
             os.path.basename(path),
             f"Duration: {self._format_duration(timedelta(seconds=duration))}",
-            sound=True,
+            sound=False,
         )
 
     def _on_error(self, message: str) -> None:
         truncated = (message[:57] + "\u2026") if len(message) > 60 else message
         self._status_item.title = f"Error: {truncated}"
-        rumps.notification("auto-rb-recorder", "Error", truncated)
+        rumps.notification(APP_NAME, "Recording error", truncated)
 
     def _open_recordings_folder(self, _) -> None:
         os.makedirs(self.config.output_dir, exist_ok=True)
@@ -192,13 +203,15 @@ class MenuBarApp(rumps.App):
             pass
 
     def _show_about(self, _) -> None:
-        rumps.alert(
-            title="auto-rb-recorder",
-            message=(
-                "Automatic Rekordbox session recorder.\n\n"
-                "https://github.com/icherniukh/auto-rb-recorder"
-            ),
-        )
+        try:
+            from AppKit import NSApp
+            NSApp.activateIgnoringOtherApps_(True)
+            NSApp.orderFrontStandardAboutPanelWithOptions_({
+                "ApplicationName": APP_NAME,
+                "Credits": _about_credits(),
+            })
+        except Exception:
+            rumps.alert(title=APP_NAME, message=f"Automatic Rekordbox session recorder.\n\n{_REPO_URL}")
 
     def _quit(self, _) -> None:
         if self._bridge.state == AppState.RECORDING:
