@@ -33,6 +33,9 @@ class MenuBarApp(rumps.App):
 
         self._tick_timer = rumps.Timer(self._update_tick, 1.0)
 
+    def _set_title(self, title: str) -> None:
+        self.title = title
+
     def _build_menu(self) -> None:
         self._status_item = rumps.MenuItem("Idle \u2014 waiting for Rekordbox")
         self._status_item.set_callback(None)
@@ -72,25 +75,25 @@ class MenuBarApp(rumps.App):
     def _apply_state(self, state: AppState) -> None:
         if state == AppState.IDLE:
             self._set_icon("circle", red=False)
-            self.title = ""
+            self._set_title("RB")
             self._status_item.title = "Idle \u2014 waiting for Rekordbox"
             self._stop_tick()
 
         elif state == AppState.MONITORING:
             self._set_icon("circle.dotted", red=False)
-            self.title = ""
+            self._set_title("RB")
             self._status_item.title = "Monitoring \u2014 listening\u2026"
             self._segments_item.title = f"Segments: {self._bridge.segment_count}"
             self._stop_tick()
 
         elif state == AppState.RECORDING:
             self._set_icon("record.circle.fill", red=True)
-            self.title = "REC"
+            self._set_title("REC")
             self._start_tick()
 
         elif state == AppState.ERROR:
             self._set_icon("exclamationmark.triangle.fill", red=False)
-            self.title = ""
+            self._set_title("ERR")
             self._stop_tick()
 
     def _set_icon(self, symbol_name: str, red: bool) -> None:

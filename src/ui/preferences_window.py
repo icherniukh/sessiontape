@@ -103,6 +103,8 @@ class PreferencesWindowController(NSObject):
         self._save_callback = save_callback
         self._panel = None
         self._controls: dict = {}
+        self._slider_labels: dict[int, NSTextField] = {}
+        self._stepper_meta: dict[int, tuple[NSTextField, str]] = {}
         return self
 
     @objc.python_method
@@ -138,7 +140,7 @@ class PreferencesWindowController(NSObject):
         dir_field.setEditable_(False)
         choose_btn = _button("Choose\u2026", _CTRL_X + _CTRL_W - 62, y - 2, 60)
         choose_btn.setTarget_(self)
-        choose_btn.setAction_(objc.selector(self._choose_folder_clicked_, signature=b"v@:@"))
+        choose_btn.setAction_(objc.selector(self.chooseFolderClicked_, signature=b"v@:@"))
         row("Output Folder", dir_field, y)
         content.addSubview_(choose_btn)
         self._controls["output_dir"] = dir_field
@@ -170,8 +172,8 @@ class PreferencesWindowController(NSObject):
         slider_label.setDrawsBackground_(False)
         slider_label.setEditable_(False)
         slider.setTarget_(self)
-        slider.setAction_(objc.selector(self._slider_changed_, signature=b"v@:@"))
-        objc.setAssociated(slider, "label_ref", slider_label)
+        slider.setAction_(objc.selector(self.sliderChanged_, signature=b"v@:@"))
+        self._slider_labels[id(slider)] = slider_label
         row("Silence Threshold", slider, y)
         content.addSubview_(slider_label)
         self._controls["silence_threshold_db"] = slider
@@ -186,9 +188,8 @@ class PreferencesWindowController(NSObject):
             stepper.setIncrement_(step)
             stepper.setValueWraps_(False)
             stepper.setTarget_(self)
-            stepper.setAction_(objc.selector(self._stepper_changed_, signature=b"v@:@"))
-            objc.setAssociated(stepper, "field_ref", field)
-            objc.setAssociated(stepper, "suffix", suffix)
+            stepper.setAction_(objc.selector(self.stepperChanged_, signature=b"v@:@"))
+            self._stepper_meta[id(stepper)] = (field, suffix)
             unit_lbl = _label(suffix, _CTRL_X + 86, y_pos, 40, 20)
             unit_lbl.setAlignment_(_ALIGN_LEFT)
             row(label_text, field, y_pos)
@@ -215,11 +216,11 @@ class PreferencesWindowController(NSObject):
         save_btn = _button("Save", _W - _MARGIN - 80, _MARGIN, 76)
         save_btn.setKeyEquivalent_("\r")
         save_btn.setTarget_(self)
-        save_btn.setAction_(objc.selector(self._save_clicked_, signature=b"v@:@"))
+        save_btn.setAction_(objc.selector(self.saveClicked_, signature=b"v@:@"))
 
         cancel_btn = _button("Cancel", _W - _MARGIN - 168, _MARGIN, 80)
         cancel_btn.setTarget_(self)
-        cancel_btn.setAction_(objc.selector(self._cancel_clicked_, signature=b"v@:@"))
+        cancel_btn.setAction_(objc.selector(self.cancelClicked_, signature=b"v@:@"))
 
         content.addSubview_(save_btn)
         content.addSubview_(cancel_btn)
@@ -253,20 +254,20 @@ class PreferencesWindowController(NSObject):
 
         self._controls["process_name"].setStringValue_(cfg.process_name)
 
-    def _slider_changed_(self, sender) -> None:
-        lbl = objc.getAssociated(sender, "label_ref")
+    def sliderChanged_(self, sender) -> None:
+        lbl = self._slider_labels.get(id(sender))
         if lbl:
             lbl.setStringValue_(f"{sender.floatValue():.0f} dB")
 
-    def _stepper_changed_(self, sender) -> None:
-        field = objc.getAssociated(sender, "field_ref")
-        suffix = objc.getAssociated(sender, "suffix") or ""
-        if field:
+    def stepperChanged_(self, sender) -> None:
+        meta = self._stepper_meta.get(id(sender))
+        if meta:
+            field, suffix = meta
             val = sender.doubleValue()
             display = f"{val:.0f}{suffix}" if val == int(val) else f"{val}{suffix}"
             field.setStringValue_(display)
 
-    def _choose_folder_clicked_(self, _sender) -> None:
+    def chooseFolderClicked_(self, _sender) -> None:
         panel = NSOpenPanel.openPanel()
         panel.setCanChooseFiles_(False)
         panel.setCanChooseDirectories_(True)
@@ -277,7 +278,7 @@ class PreferencesWindowController(NSObject):
             if url:
                 self._controls["output_dir"].setStringValue_(_collapse_home(url.path()))
 
-    def _save_clicked_(self, _sender) -> None:
+    def saveClicked_(self, _sender) -> None:
         cfg = self._collect_fields()
         if cfg is None:
             return
@@ -319,7 +320,7 @@ class PreferencesWindowController(NSObject):
         self._save_callback(cfg)
         self._panel.orderOut_(None)
 
-    def _cancel_clicked_(self, _sender) -> None:
+    def cancelClicked_(self, _sender) -> None:
         self._populate_fields()
         self._panel.orderOut_(None)
 
