@@ -77,6 +77,21 @@ final class CaptureMetrics: @unchecked Sendable {
         recordCallback(elapsedNs: ns, usedFallback: usedFallback)
     }
 
+    /// Histogram p99 estimate: the ceiling of the bucket holding the 99th percentile, clamped to the
+    /// observed maximum (a bucket ceiling can otherwise exceed `cb_max`).
+    static func p99Ms(bucketCounts counts: [Int], totalCallbacks: Int, maxMs: Double) -> Double {
+        guard totalCallbacks > 0 else { return 0.0 }
+        let targetCount = Int(Double(totalCallbacks) * 0.99)
+        var accumulated = 0
+        for idx in 0..<counts.count {
+            accumulated += counts[idx]
+            if accumulated >= targetCount {
+                return min(bucketUpperLimitsMs[idx], maxMs)
+            }
+        }
+        return maxMs
+    }
+
     func emitIfDue(
         bytesWritten: Int,
         droppedWrites: Int,
@@ -110,20 +125,8 @@ final class CaptureMetrics: @unchecked Sendable {
             b7.exchange(0, ordering: .relaxed),
         ]
 
-        var p99Ms = 0.0
-        if totalCallbacks > 0 {
-            let targetCount = Int(Double(totalCallbacks) * 0.99)
-            var accumulated = 0
-            for idx in 0..<counts.count {
-                accumulated += counts[idx]
-                if accumulated >= targetCount {
-                    p99Ms = Self.bucketUpperLimitsMs[idx]
-                    break
-                }
-            }
-        }
-
         let maxMs = Double(maxNs) / 1_000_000.0
+        let p99Ms = Self.p99Ms(bucketCounts: counts, totalCallbacks: totalCallbacks, maxMs: maxMs)
 
         let line = String(
             format: "CAPTURE drops=%d cb_max=%.2f cb_p99=%.2f slow=%d fb=%d cb=%d bytes=%d",
