@@ -118,8 +118,8 @@ This makes it a decisive experiment, not a guaranteed fix:
 - **No overload** → replayd's display pipeline was the cause. Switching off SCK is a real
   zero-setup fix.
 
-**Version constraint**: CATapDescription requires macOS 14.2+ (exact floor TBD). README currently
-says macOS 12+. Adopting it either raises the floor or requires keeping SCK as a 12–13 fallback.
+**Version constraint**: CATapDescription requires macOS 14.2+. mac-capture now targets macOS 15
+(see README requirements); SCK stays as the fallback backend.
 This tradeoff must be decided before shipping.
 
 **Entitlement**: requires `com.apple.security.cs.allow-unsigned-executable-memory` or a specific

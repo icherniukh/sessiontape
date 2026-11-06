@@ -57,7 +57,7 @@ brew services start sessiontape
 ```
 
 **Permissions:**
-Open Rekordbox — a system dialog will prompt for **Screen Recording** consent. If missed: **System Settings → Privacy & Security → Screen Recording → enable `sessiontape`**.
+Open Rekordbox — macOS will ask for consent: **audio recording** for the CoreAudio tap backend (the default), **Screen Recording** for the ScreenCaptureKit backend. If missed, enable `sessiontape` under **System Settings → Privacy & Security** (Screen & System Audio Recording).
 
 ### Installation from Source
 
