@@ -129,9 +129,6 @@ class PipelineCaptureMetrics:
         return line
 
 
-# Backward-compatible alias used by tests/benchmarks.
-parse_capture_metrics_line = parse_capture_line
-
 
 def benchmark_recorder_core(
     *,

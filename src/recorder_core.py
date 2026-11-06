@@ -1,6 +1,7 @@
 import glob
 import logging
 import math
+import operator
 import os
 import queue
 import shutil
@@ -441,14 +442,11 @@ class PCMStreamRecorder:
         self._output_path = None
 
     def _calculate_rms(self, chunk: bytes) -> float:
-        sample_count = len(chunk) // 2
-        if sample_count == 0:
+        usable = len(chunk) & ~1  # ignore a trailing odd byte
+        if usable == 0:
             return 0.0
-        sum_squares = 0
-        for offset in range(0, sample_count * 2, 2):
-            sample = int.from_bytes(chunk[offset : offset + 2], "little", signed=True)
-            sum_squares += sample * sample
-        return math.sqrt(sum_squares / sample_count)
+        samples = memoryview(chunk)[:usable].cast("h")  # s16le; all supported hosts are little-endian
+        return math.sqrt(sum(map(operator.mul, samples, samples)) / len(samples))
 
 
 def recover_orphaned_raw_files(

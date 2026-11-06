@@ -119,13 +119,14 @@ class AudioCapture:
         whole number of s16le stereo frames (4 bytes), possibly to b"".
         """
         size = self.chunk_size
-        buf = bytearray()
-        while len(buf) < size:
-            part = stream.read(size - len(buf))
-            if not part:
-                return bytes(buf[: len(buf) - len(buf) % 4])
-            buf += part
-        return bytes(buf)
+        data = stream.read(size)
+        if len(data) == size:
+            return data  # common case: a buffered pipe returns the whole chunk
+        buf = bytearray(data)
+        while data and len(buf) < size:
+            data = stream.read(size - len(buf))
+            buf += data
+        return bytes(buf[: len(buf) - len(buf) % 4])
 
     def _read_loop(self) -> None:
         chunks_read = 0
@@ -181,9 +182,7 @@ class AudioCapture:
             m = _FORMAT_MISMATCH_RE.search(decoded)
             if m:
                 self.format_mismatch_rate = int(m.group(1))
-            if self._ingest_native_metric(decoded):
-                continue
-            if decoded.startswith("INFO: ") and self._ingest_native_metric(decoded[6:]):
+            if self._ingest_native_metric(decoded):  # parse_capture_line strips "INFO: " itself
                 continue
             if decoded.startswith("INFO: "):
                 capture_log.info(decoded[6:])
