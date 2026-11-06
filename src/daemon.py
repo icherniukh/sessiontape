@@ -6,7 +6,7 @@ from typing import Optional
 
 import psutil
 
-from src.capture import EXIT_FORMAT_MISMATCH, AudioCapture
+from src.capture import EXIT_FORMAT_CHANGED, EXIT_FORMAT_MISMATCH, AudioCapture
 from src.config import Config
 from src.events import (
     CaptureDied,
@@ -196,8 +196,13 @@ class RecorderDaemon:
                             )
                         else:
                             self._restart_count += 1
+                            reason = (
+                                "tap format changed mid-session"
+                                if event.exit_code == EXIT_FORMAT_CHANGED
+                                else f"exit code {event.exit_code}"
+                            )
                             log.warning(
-                                f"Capture process exited (exit code {event.exit_code}). "
+                                f"Capture process exited ({reason}). "
                                 f"Restarting capture (attempt {self._restart_count})."
                             )
                             self._stop_capture(keep_pid=True)
