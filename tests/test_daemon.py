@@ -2,6 +2,7 @@ import queue
 import unittest
 from unittest.mock import MagicMock, patch
 
+from src.backends.macos_capture import MacCaptureOptions
 from src.capture import EXIT_FORMAT_CHANGED, EXIT_FORMAT_MISMATCH
 from src.config import Config
 from src.daemon import RecorderDaemon
@@ -16,23 +17,28 @@ from src.events import (
 
 
 class TestRecorderDaemon(unittest.TestCase):
+    @patch("src.daemon.get_platform_backend")
     @patch("src.daemon.AudioCapture")
     @patch("src.daemon.ProcessMonitor")
     @patch("src.daemon.recover_orphaned_raw_files")
     def test_start_recording_on_process_detected(
-        self, MockRecover, MockMonitor, MockCapture
+        self, MockRecover, MockMonitor, MockCapture, mock_get_backend
     ):
-        cfg = Config(output_dir="/tmp/test_output")
+        cfg = Config(output_dir="/tmp/test_output", mac_capture_diag=True)
         daemon = RecorderDaemon(cfg)
 
         daemon._start_capture(pid=12345)
+
+        mock_get_backend.assert_called_once_with(
+            "auto", mac_options=MacCaptureOptions(diag=True)
+        )
 
         MockCapture.assert_called_once_with(
             pid=12345,
             output_dir="/tmp/test_output",
             queue=daemon._queue,
             sample_rate=48000,
-            backend_name="auto",
+            backend=mock_get_backend.return_value,
             silence_threshold_db=-50,
             min_silence_duration=15,
             min_segment_duration=10,
@@ -40,10 +46,6 @@ class TestRecorderDaemon(unittest.TestCase):
             export_format="wav",
             export_manager=daemon._export_manager,
             perf_metrics=True,
-            mac_capture_backend="auto",
-            mac_capture_metrics=True,
-            mac_capture_diag=False,
-            mac_capture_log="",
         )
         MockCapture.return_value.start.assert_called_once()
 

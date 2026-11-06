@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from src.backends.macos_capture import MacCaptureBackend
+from src.backends.macos_capture import MacCaptureBackend, MacCaptureOptions
 from src.backends.windows_capture import WindowsCaptureBackend
 from src.platform import get_platform_backend
 
@@ -11,6 +11,12 @@ class TestPlatformBackendSelection(unittest.TestCase):
     def test_macos_defaults_to_mac_capture(self):
         backend = get_platform_backend()
         self.assertIsInstance(backend, MacCaptureBackend)
+
+    @patch("src.platform.sys.platform", "darwin")
+    def test_macos_passes_options(self):
+        options = MacCaptureOptions(backend_mode="tap", diag=True)
+        backend = get_platform_backend(mac_options=options)
+        self.assertIs(backend._options, options)
 
     @patch("src.platform.sys.platform", "darwin")
     def test_invalid_macos_backend_raises(self):
