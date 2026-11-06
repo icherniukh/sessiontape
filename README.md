@@ -1,170 +1,122 @@
-# auto-rb-recorder
+# SessionTape
 
 Background daemon that automatically records Pioneer Rekordbox DJ sets by capturing process audio output.
 
 - **Silence detection** — pauses recording when no audio is playing
 - **Session splitting** — silence gaps create separate files
-- **Auto export** — saves to `~/Music/auto-rb-recorder/` as WAV or MP3 when Rekordbox closes
+- **Auto export** — saves to `~/Music/sessiontape/` as WAV or MP3 when Rekordbox closes
 
 ---
 
-## Windows Installation
+## Installation
 
-### Requirements
+### Windows (Pre-built)
 
-- Windows 10 Build 19041+ (WASAPI process loopback)
-- Python 3.11+
-- Visual Studio 2019+ with **Desktop development with C++** workload
-- _(optional)_ `ffmpeg` on PATH for MP3 export
+Windows code signing is provided by SignPath.io, certificate by SignPath Foundation.
 
-### 1. Clone
+#### Method 1: PowerShell (Recommended)
+Open PowerShell and paste this command to download and run the installer directly:
 
 ```powershell
-git clone https://github.com/icherniukh/auto-rb-recorder.git
-cd auto-rb-recorder
+$msi = "$env:TEMP\sessiontape.msi"; Invoke-WebRequest -Uri "https://github.com/icherniukh/sessiontape/releases/latest/download/sessiontape.msi" -OutFile $msi; if ($?) { Start-Process msiexec.exe -ArgumentList '/i', $msi, '/qn', '/norestart' -Wait }
 ```
 
-### 2. Build the native capture helper
+The installer places the application in `%LOCALAPPDATA%\Programs\SessionTape` and the config in `%APPDATA%\sessiontape\config.toml`. It registers a Scheduled Task so it runs automatically at login.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File windows-capture\build.ps1
+You can also run it manually from the command line:
+
+```bash
+sessiontape        # normal execution
+sessiontape -v     # verbose debug logging
 ```
 
-Produces `windows-capture\rb-capture-win.exe`. The script will locate MSVC automatically via `vswhere` if `cl.exe` is not already on PATH.
+#### Method 2: Manual Download
+1. Download the latest `sessiontape.msi` from the [Releases](https://github.com/icherniukh/sessiontape/releases) page.
+2. **Unblock the installer:** Right-click the downloaded `.msi` -> **Properties** -> Check **Unblock** -> **OK**.
+3. Run the installer. 
+   > **Note:** If you still see "Windows protected your PC", click **More info** -> **Run anyway**.
 
-### 3. Install the Python package
 
-```powershell
-pip install -e .
-```
-
-### 4. Place the capture helper on PATH
-
-```powershell
-$scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
-Copy-Item windows-capture\rb-capture-win.exe $scripts
-```
-
-### 5. Create config
-
-```powershell
-New-Item -ItemType Directory -Force "$env:APPDATA\rb-recorder"
-Copy-Item config.default.toml "$env:APPDATA\rb-recorder\config.toml"
-```
-
-Edit `%APPDATA%\rb-recorder\config.toml` as needed (see [Configuration](#configuration)).
-
-### 6. Run
-
-```powershell
-auto-rb-recorder        # foreground
-auto-rb-recorder -v     # verbose
-```
-
-### 7. Auto-start at login (optional)
-
-Requires a standalone exe built with PyInstaller:
-
-```powershell
-pip install pyinstaller
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
-powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
-```
-
-To uninstall:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\uninstall-windows.ps1
-```
-
----
-
-## macOS Installation
-
-### Requirements
-
-- macOS 12+
-- Homebrew
-
-### 1. Install
+### macOS (Homebrew)
 
 ```bash
 brew tap icherniukh/tap
-brew install auto-rb-recorder
+brew install sessiontape
 ```
 
-### 2. Grant Screen Recording permission (macOS 14+)
-
-Open Rekordbox once — a system dialog will prompt for **Screen Recording** consent. If missed: **System Settings → Privacy & Security → Screen Recording → enable `auto-rb-recorder`**.
-
-### 3. Run
+Run SessionTape in the foreground:
 
 ```bash
-auto-rb-recorder                       # foreground
-brew services start auto-rb-recorder   # background, starts at login
+sessiontape
 ```
+
+Start it as a background service at login:
+
+```bash
+brew services start sessiontape
+```
+
+**Permissions (macOS 14+):**
+Open Rekordbox — a system dialog will prompt for **Screen Recording** consent. If missed: **System Settings → Privacy & Security → Screen Recording → enable `sessiontape`**.
+
+### Installation from Source
+
+If you want to install from source instead of using pre-built binaries, you will need the appropriate build tools (Visual Studio C++ on Windows, Xcode on macOS) and Python/uv.
+
+```bash
+git clone https://github.com/icherniukh/sessiontape.git
+cd sessiontape
+uv pip install -e .
+```
+*(Note: For this to work fully, you must also compile the native capture binaries for your platform. See the Development section below).*
 
 ---
 
 ## Configuration
 
-Config file locations:
-- **Windows:** `%APPDATA%\rb-recorder\config.toml`
-- **macOS:** `~/Library/Application Support/rb-recorder/config.toml`
+The application uses a configuration file to customize its behavior (such as output directory, silence thresholds, and export format).
 
-```toml
-[recording]
-sample_rate = 48000                      # must match system audio output rate
-capture_backend = "auto"                 # macOS: "auto" -> mac-capture, or "audiotee"
-output_dir = "~/Music/auto-rb-recorder"
-export_format = "wav"                    # "wav" or "mp3" (mp3 requires ffmpeg)
+**Config file locations:**
+- **Windows:** `%APPDATA%\sessiontape\config.toml` (created automatically by the installer)
+- **macOS:** `~/Library/Application Support/sessiontape/config.toml` (you must create this manually)
 
-[trigger]
-silence_threshold_db = -50              # dB level below which audio counts as silence
-min_silence_duration = 15               # seconds of silence before closing a session
-decay_tail = 5                          # seconds of pre-sound buffer kept at session start
+You can find a complete list of settings and their default values in the [`config.default.toml`](config.default.toml) file in this repository.
 
-[monitor]
-process_name = "rekordbox"
-poll_interval = 2.0
-```
-
-For quick backend switching during macOS debugging, you can also override the config with:
-
-```bash
-RB_CAPTURE_BACKEND=mac-capture auto-rb-recorder
-RB_CAPTURE_BACKEND=audiotee auto-rb-recorder
-```
+If you want to export recordings as MP3 instead of WAV, ensure `ffmpeg` is installed and available on your system `PATH`.
 
 ---
 
-## Building a standalone executable from source
+## Development (For Contributors)
 
-**macOS**
-```bash
-git clone --recurse-submodules https://github.com/icherniukh/auto-rb-recorder.git
-cd auto-rb-recorder
-pip install pyinstaller
-bash scripts/build.sh
-# → dist/auto-rb-recorder
-```
+### Requirements
+
+- **Windows:** 10 Build 19041+ (WASAPI loopback), Visual Studio 2019+ (C++ workload)
+- **macOS:** 12+ (Screen Recording permission required), Xcode + Swift toolchain
+- Python 3.11+
+- `uv` (recommended) or `pip`
+
+### Building Standalone Executables & Installers
+
+The following scripts handle the entire build process: compiling the native capture binary, bundling the Python daemon using PyInstaller, and (on Windows) creating the WiX MSI installer plus an optional Inno Setup installer when available.
 
 **Windows**
 ```powershell
-git clone https://github.com/icherniukh/auto-rb-recorder.git
-cd auto-rb-recorder
-pip install pyinstaller
+uv pip install pyinstaller
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
-# → dist\auto-rb-recorder.exe
 ```
+*Outputs to `dist\sessiontape.exe` and `dist\sessiontape.msi`, plus `dist\sessiontape-setup.exe` when Inno Setup is installed.*
 
----
+**macOS**
+```bash
+uv pip install pyinstaller
+bash scripts/build.sh --full
+```
+*Outputs to `dist/sessiontape`.*
 
-## Testing
+### Testing
 
 ```bash
-pip install pytest
-pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 ---
@@ -176,6 +128,19 @@ pytest tests/ -v
 | `src/daemon.py` | Orchestrator — drives capture lifecycle on Rekordbox start/stop |
 | `src/process_monitor.py` | Polls for Rekordbox process with debounce |
 | `src/capture.py` | Selects platform backend, feeds PCM to recorder |
-| `src/backends/windows_capture.py` | Spawns `rb-capture-win.exe`, reads PCM from stdout |
+| `src/backends/macos_capture.py` | Spawns `mac-capture`, reads PCM from stdout |
+| `src/backends/windows_capture.py` | Spawns `sessiontape-capture-win.exe`, reads PCM from stdout |
 | `src/recorder_core.py` | Silence detection, raw session writing, WAV/MP3 export |
-| `windows-capture/main.cpp` | Native WASAPI process loopback helper (Windows) |
+| `windows-capture/main.cpp` | Native WASAPI process loopback binary (Windows) |
+| `mac-capture/` | Native CoreAudio process tap binary (macOS) |
+
+## License
+
+© 2026 Ivan Cherniukh.
+
+All code is licensed under the GPL, v3 or later. See [LICENSE](./LICENSE) file
+for details.
+
+## Privacy
+
+See [PRIVACY.md](./PRIVACY.md).

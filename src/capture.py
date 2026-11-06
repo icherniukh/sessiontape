@@ -1,4 +1,3 @@
-import json
 import logging
 import subprocess
 import threading
@@ -9,14 +8,8 @@ from src.events import CaptureDied, Event, EventQueue, TapBroken
 from src.platform import get_platform_backend
 from src.recorder_core import ExportManager, PCMStreamRecorder
 
-log = logging.getLogger("rb-recorder")
-audiotee_log = logging.getLogger("rb-recorder.capture")
-
-_AUDIOTEE_LEVEL_MAP = {
-    "debug": logging.DEBUG,
-    "info": logging.INFO,
-    "error": logging.ERROR,
-}
+log = logging.getLogger("sessiontape")
+capture_log = logging.getLogger("sessiontape.capture")
 
 
 class AudioCapture:
@@ -79,18 +72,18 @@ class AudioCapture:
                 break
             chunks_read += 1
             if chunks_read == 1:
-                log.debug("First PCM chunk received from capture helper")
+                log.debug("First PCM chunk received from capture process")
             self.recorder.process_chunk(chunk)
         exit_code = self._proc.poll() if self._proc else None
         if self.is_recording:
-            # Loop exited while is_recording=True — helper died without being asked to stop
+            # Loop exited while is_recording=True — process exited without being asked to stop
             log.warning(
-                f"[DIAG] Capture helper died unexpectedly after {chunks_read} chunks "
+                f"[DIAG] Capture process exited unexpectedly after {chunks_read} chunks "
                 f"(exit code: {exit_code})"
             )
             self.queue.put(CaptureDied(exit_code=exit_code))
         else:
-            log.info(f"Read loop exited after {chunks_read} chunks (helper exit code: {exit_code})")
+            log.info(f"Read loop exited after {chunks_read} chunks (capture exit code: {exit_code})")
 
     def _log_stderr(self) -> None:
         if not self._proc or not self._proc.stderr:
@@ -100,32 +93,14 @@ class AudioCapture:
             if not line:
                 continue
             decoded = line.decode(errors="replace") if isinstance(line, bytes) else line
-            
-            # Try to parse audiotee JSON
-            try:
-                msg = json.loads(decoded)
-                msg_type = msg.get("message_type", "info")
-                data = msg.get("data") or {}
-                text = data.get("message", "")
-                context = data.get("context")
-                if context:
-                    ctx_str = " ".join(f"{k}={v}" for k, v in context.items())
-                    text = f"{text} [{ctx_str}]"
-                level = _AUDIOTEE_LEVEL_MAP.get(msg_type, logging.INFO)
-                audiotee_log.log(level, "%s", text)
-                continue
-            except (json.JSONDecodeError, AttributeError, KeyError):
-                pass
-            
-            # Parse mac-capture plain text logs
             if decoded.startswith("INFO: "):
-                audiotee_log.info(decoded[6:])
+                capture_log.info(decoded[6:])
             elif decoded.startswith("ERROR: "):
-                audiotee_log.error(decoded[7:])
+                capture_log.error(decoded[7:])
             elif decoded.startswith("DEBUG: "):
-                audiotee_log.debug(decoded[7:])
+                capture_log.debug(decoded[7:])
             else:
-                audiotee_log.info(decoded)
+                capture_log.info(decoded)
 
     def start(self) -> None:
         if self.is_recording:
@@ -134,7 +109,7 @@ class AudioCapture:
         self.is_recording = True
         self.recorder.reset()
         self._proc = self.backend.start(self.pid, self.sample_rate)
-        log.info(f"Capture helper started (PID={self._proc.pid})")
+        log.info(f"Capture process started (PID={self._proc.pid})")
 
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
@@ -143,15 +118,27 @@ class AudioCapture:
             self._stderr_thread = threading.Thread(target=self._log_stderr, daemon=True)
             self._stderr_thread.start()
 
+    def _ensure_proc_stopped(self, proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:
+            return
+
+        log.warning("Capture process still running after backend.stop(); forcing cleanup")
+        proc.kill()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            log.error("Capture process did not exit after forced kill")
+
     def stop(self) -> None:
         if not self.is_recording:
             return
 
         self.is_recording = False
 
-        if self._proc:
-            self.backend.stop(self._proc)
-            self._proc = None
+        proc = self._proc
+        if proc:
+            self.backend.stop(proc)
+            self._ensure_proc_stopped(proc)
 
         if self._reader_thread:
             self._reader_thread.join(timeout=2.0)
@@ -161,4 +148,5 @@ class AudioCapture:
             self._stderr_thread.join(timeout=2.0)
             self._stderr_thread = None
 
+        self._proc = None
         self.recorder.finalize()

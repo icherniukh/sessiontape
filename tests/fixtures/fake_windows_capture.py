@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fake rb-capture-win.exe for integration tests on Windows."""
+"""Fake sessiontape-capture-win.exe for integration tests on Windows."""
 import argparse
 import os
 import sys

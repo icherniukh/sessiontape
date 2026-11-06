@@ -15,9 +15,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Optional
 
+from src.config import SUPPORTED_EXPORT_FORMATS
 from src.events import Event, ExportFailed, ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
 
-log = logging.getLogger("rb-recorder")
+log = logging.getLogger("sessiontape")
 
 
 def db_to_rms(db: float) -> float:
@@ -68,7 +69,12 @@ class ExportManager:
         self.sample_rate = sample_rate
         self.channels = channels
         self.bytes_per_sample = bytes_per_sample
+        if not isinstance(export_format, str):
+            raise ValueError("export_format must be a string")
         self.export_format = export_format.lower()
+        if self.export_format not in SUPPORTED_EXPORT_FORMATS:
+            supported = ", ".join(sorted(SUPPORTED_EXPORT_FORMATS))
+            raise ValueError(f"export_format must be one of: {supported}")
         self.event_sink = event_sink
         self._jobs: queue.Queue[Optional[_ExportJob]] = queue.Queue()
         self._worker: Optional[threading.Thread] = None
@@ -172,7 +178,12 @@ class ExportManager:
             "320k",
             output_path,
         ]
-        result = subprocess.run(cmd, capture_output=True)
+        
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            
+        result = subprocess.run(cmd, capture_output=True, **kwargs)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.decode(errors="ignore").strip())
 
@@ -197,7 +208,12 @@ class PCMStreamRecorder:
         self.on_tap_broken = on_tap_broken
         self.sample_rate = sample_rate
         self.min_segment_duration = min_segment_duration
+        if not isinstance(export_format, str):
+            raise ValueError("export_format must be a string")
         self.export_format = export_format.lower()
+        if self.export_format not in SUPPORTED_EXPORT_FORMATS:
+            supported = ", ".join(sorted(SUPPORTED_EXPORT_FORMATS))
+            raise ValueError(f"export_format must be one of: {supported}")
         self.event_sink = event_sink
 
         self.chunk_duration = 0.1  # 100ms chunks
@@ -214,6 +230,7 @@ class PCMStreamRecorder:
         self.silence_chunks_threshold = int(min_silence_duration / self.chunk_duration)
         self.buffer_maxlen = int(decay_tail / self.chunk_duration)
 
+        self._owns_export_manager = export_manager is None
         self.export_manager = export_manager or ExportManager(
             sample_rate=self.sample_rate,
             channels=self.channels,
@@ -338,6 +355,8 @@ class PCMStreamRecorder:
         if self.state == "ACTIVE":
             self._close_current_file()
             self.state = "PASSIVE"
+        if self._owns_export_manager:
+            self.export_manager.shutdown()
 
     def _open_new_file(self) -> None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")

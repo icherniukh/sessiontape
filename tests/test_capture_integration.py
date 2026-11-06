@@ -6,7 +6,7 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.capture import AudioCapture
 
@@ -15,8 +15,31 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 FAKE_AUDIOTEE = str(FIXTURE_DIR / "fake_audiotee.py")
 FAKE_WINDOWS_CAPTURE = str(FIXTURE_DIR / "fake_windows_capture.py")
 
+
+class FakeAudioteeBackend:
+    def start(self, pid: int, sample_rate: int):
+        import subprocess as _sp
+
+        return _sp.Popen(
+            [sys.executable, FAKE_AUDIOTEE, "--include-processes", str(pid), "--sample-rate", str(sample_rate)],
+            stdout=_sp.PIPE,
+            stderr=_sp.PIPE,
+        )
+
+    def stop(self, proc):
+        import subprocess as _sp
+
+        if proc.poll() is None:
+            proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except _sp.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
 def _make_capture(tmpdir, q, **kwargs):
-    """Create an AudioCapture that invokes the platform-appropriate fake helper."""
+    """Create an AudioCapture that invokes the platform-appropriate fake capture process."""
     if sys.platform == "win32":
         from src.backends.windows_capture import WindowsCaptureBackend
         import subprocess as _sp
@@ -27,19 +50,12 @@ def _make_capture(tmpdir, q, **kwargs):
                     [sys.executable, FAKE_WINDOWS_CAPTURE, "--pid", str(pid), "--sample-rate", str(sample_rate)],
                     stdout=_sp.PIPE,
                     stderr=_sp.DEVNULL,
+                    creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0x08000000),
                 )
 
         return AudioCapture(queue=q, backend=FakeWindowsBackend(), **kwargs)
     else:
-        # Mock the backend to use our fake_audiotee script
-        mock_backend = MagicMock()
-        import subprocess as _sp
-        mock_backend.start.side_effect = lambda pid, sr: _sp.Popen(
-            [sys.executable, FAKE_AUDIOTEE, "--include-processes", str(pid), "--sample-rate", str(sr)],
-            stdout=_sp.PIPE,
-            stderr=_sp.PIPE,
-        )
-        return AudioCapture(queue=q, backend=mock_backend, **kwargs)
+        return AudioCapture(queue=q, backend=FakeAudioteeBackend(), **kwargs)
 
 
 def wait_until(predicate, timeout: float = 5.0, interval: float = 0.01) -> None:
@@ -72,9 +88,11 @@ class TestAudioCaptureIntegration(unittest.TestCase):
                     decay_tail=0.0,
                     export_format="wav",
                 )
-                cap.start()
-                wait_until(lambda: cap._proc is not None and cap._proc.poll() is not None)
-                cap.stop()
+                try:
+                    cap.start()
+                    wait_until(lambda: cap._proc is not None and cap._proc.poll() is not None)
+                finally:
+                    cap.stop()
                 cap.recorder.export_manager.shutdown()
 
             wait_until(lambda: len(list(Path(tmpdir).glob("rb_session_*.wav"))) == 2)
@@ -99,9 +117,11 @@ class TestAudioCaptureIntegration(unittest.TestCase):
                     decay_tail=0.2,
                     export_format="wav",
                 )
-                cap.start()
-                wait_until(lambda: cap._proc is not None and cap._proc.poll() is not None)
-                cap.stop()
+                try:
+                    cap.start()
+                    wait_until(lambda: cap._proc is not None and cap._proc.poll() is not None)
+                finally:
+                    cap.stop()
                 cap.recorder.export_manager.shutdown()
 
             wait_until(lambda: len(list(Path(tmpdir).glob("rb_session_*.wav"))) == 1)

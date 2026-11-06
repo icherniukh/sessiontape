@@ -31,8 +31,8 @@ if (-Not $cl) {
     Write-Error "Could not find MSVC compiler (cl.exe). Please run this script from a x64 Native Tools Command Prompt for VS."
 }
 
-Write-Host "Compiling rb-capture-win.exe..."
-cl.exe /EHsc /O2 /W3 /MD /std:c++17 main.cpp /link ole32.lib oleaut32.lib mmdevapi.lib /OUT:rb-capture-win.exe
+Write-Host "Compiling sessiontape-capture-win.exe..."
+cl.exe /EHsc /O2 /W3 /MD /std:c++17 main.cpp /link ole32.lib oleaut32.lib mmdevapi.lib /OUT:sessiontape-capture-win.exe
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Build successful."

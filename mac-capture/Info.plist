@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.rb-recorder.mac-capture</string>
+    <string>dev.icherniukh.sessiontape.mac-capture</string>
     <key>CFBundleName</key>
     <string>mac-capture</string>
     <key>CFBundleVersion</key>

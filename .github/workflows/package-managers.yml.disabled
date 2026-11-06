@@ -1,0 +1,140 @@
+name: Package Manager Validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - packaging/winget/**
+      - packaging/chocolatey/**
+      - .github/workflows/package-managers.yml
+  push:
+    branches:
+      - main
+    paths:
+      - packaging/winget/**
+      - packaging/chocolatey/**
+      - .github/workflows/package-managers.yml
+
+jobs:
+  validate-package-metadata:
+    name: Validate package metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Check staged package metadata
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = pathlib.Path(".")
+          errors = []
+
+          nuspec = root / "packaging/chocolatey/sessiontape/sessiontape.nuspec"
+          ns = {"n": "http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd"}
+          xml = ET.parse(nuspec)
+          version = xml.findtext(".//n:version", namespaces=ns)
+          if not version:
+              errors.append("Chocolatey nuspec is missing metadata/version")
+
+          install = (root / "packaging/chocolatey/sessiontape/tools/chocolateyInstall.ps1").read_text()
+          verification = (root / "packaging/chocolatey/sessiontape/tools/VERIFICATION.txt").read_text()
+          choco_url = re.search(r"url64bit\s*=\s*'([^']+)'", install)
+          choco_sha = re.search(r"checksum64\s*=\s*'([A-Fa-f0-9]{64})'", install)
+          if not choco_url:
+              errors.append("Chocolatey install script is missing url64bit")
+          if not choco_sha:
+              errors.append("Chocolatey install script is missing a 64-char SHA256 checksum")
+
+          winget_dir = root / f"packaging/winget/manifests/s/SessionTape/SessionTape/{version}"
+          installer = winget_dir / "SessionTape.SessionTape.installer.yaml"
+          locale = winget_dir / "SessionTape.SessionTape.locale.en-US.yaml"
+          version_file = winget_dir / "SessionTape.SessionTape.yaml"
+
+          def read_scalar(path, key):
+              if not path.exists():
+                  errors.append(f"Missing {path}")
+                  return None
+              match = re.search(rf"^\s*{re.escape(key)}:\s*(.+?)\s*$", path.read_text(), re.MULTILINE)
+              return match.group(1).strip().strip('"') if match else None
+
+          for path in (installer, locale, version_file):
+              pkg_version = read_scalar(path, "PackageVersion")
+              if pkg_version != version:
+                  errors.append(f"{path} PackageVersion {pkg_version!r} does not match Chocolatey version {version!r}")
+
+          winget_url = read_scalar(installer, "InstallerUrl")
+          winget_sha = read_scalar(installer, "InstallerSha256")
+          if choco_url and winget_url != choco_url.group(1):
+              errors.append("winget InstallerUrl does not match Chocolatey url64bit")
+          if choco_sha and winget_sha != choco_sha.group(1):
+              errors.append("winget InstallerSha256 does not match Chocolatey checksum64")
+          if choco_url and f"/v{version}/sessiontape.msi" not in choco_url.group(1):
+              errors.append("Chocolatey URL does not point at the matching v{version} MSI")
+          if choco_sha and choco_sha.group(1) not in verification:
+              errors.append("VERIFICATION.txt does not include the Chocolatey checksum")
+
+          if errors:
+              for error in errors:
+                  print(f"ERROR: {error}", file=sys.stderr)
+              sys.exit(1)
+          print(f"Package metadata is internally consistent for SessionTape {version}")
+          PY
+
+  validate-winget:
+    name: Validate winget manifest
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Validate manifest when winget is available
+        shell: pwsh
+        run: |
+          $winget = Get-Command winget -ErrorAction SilentlyContinue
+          if (-not $winget) {
+            Write-Warning "winget is not available on this runner; metadata consistency is covered by validate-package-metadata."
+            return
+          }
+          $manifest = "packaging\winget\manifests\s\SessionTape\SessionTape\1.2.0"
+          winget validate --manifest $manifest
+
+  package-chocolatey:
+    name: Build Chocolatey package
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Build package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          choco pack packaging\chocolatey\sessiontape\sessiontape.nuspec --outputdirectory artifacts
+
+      - name: Smoke test package metadata
+        shell: pwsh
+        run: |
+          $pkg = Get-ChildItem artifacts -Filter "sessiontape*.nupkg" | Select-Object -First 1
+          if (-not $pkg) {
+            throw "Chocolatey package was not created"
+          }
+          choco info sessiontape --source artifacts --version 1.2.0 --exact
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: chocolatey-package
+          path: artifacts/*.nupkg

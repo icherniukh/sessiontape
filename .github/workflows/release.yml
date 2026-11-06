@@ -4,10 +4,42 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
-  build_release:
+  test:
     runs-on: macos-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          uv venv
+          source .venv/bin/activate
+          uv pip install pytest
+
+      - name: Run pytest
+        run: |
+          source .venv/bin/activate
+          uv run pytest tests/ -v
+
+  build_release:
+    needs: test
+    runs-on: macos-latest
+    timeout-minutes: 10
     permissions:
       contents: write
 
@@ -42,57 +74,105 @@ jobs:
       - name: Build Executable
         run: |
           source .venv/bin/activate
-          bash scripts/build.sh
+          bash scripts/build.sh --full
 
       - name: Code Sign Binary
         run: |
-          # --options runtime: Hardened Runtime (required for notarization)
-          # --timestamp: required for notarization
-          # --entitlements: disable-library-validation allows PyInstaller's bundled
-          #   Python.framework (signed by PSF, different Team ID) to load at runtime
-          # Note: --deep is intentionally omitted — it is for .app bundles, not
-          #   --onefile binaries, and causes signing issues here
           xcrun codesign --force --options runtime --timestamp \
             --entitlements entitlements.plist \
-            --sign "Developer ID Application" dist/auto-rb-recorder
+            --sign "Developer ID Application" dist/sessiontape
 
       - name: Package Release
         run: |
           mkdir -p release_package
-          cp dist/auto-rb-recorder release_package/
+          cp dist/sessiontape release_package/
           cp config.default.toml release_package/
           cd release_package
-          # Apple Notary tool heavily prefers structural zips over tar.gz payloads
-          zip -r ../auto-rb-recorder-macos-universal.zip *
-
-      - name: Notarize Release
-        env:
-          NOTARIZATION_KEY_P8: ${{ secrets.NOTARIZATION_KEY_P8 }}
-          NOTARIZATION_KEY_ID: ${{ secrets.NOTARIZATION_KEY_ID }}
-          NOTARIZATION_ISSUER_ID: ${{ secrets.NOTARIZATION_ISSUER_ID }}
-        run: |
-          # Save the P8 key to a temporary file
-          AUTH_KEY_PATH=$RUNNER_TEMP/AuthKey_${NOTARIZATION_KEY_ID}.p8
-          echo "$NOTARIZATION_KEY_P8" > $AUTH_KEY_PATH
-
-          xcrun notarytool submit auto-rb-recorder-macos-universal.zip \
-            --key "$AUTH_KEY_PATH" \
-            --key-id "$NOTARIZATION_KEY_ID" \
-            --issuer "$NOTARIZATION_ISSUER_ID" \
-            --wait
+          zip -r ../sessiontape-macos-universal.zip *
+          cd ..
+          shasum -a 256 sessiontape-macos-universal.zip > sessiontape-macos-universal.zip.sha256
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2.6.1
         with:
-          files: auto-rb-recorder-macos-universal.zip
+          files: |
+            sessiontape-macos-universal.zip
+            sessiontape-macos-universal.zip.sha256
           generate_release_notes: true
 
       - name: Update Homebrew Tap
         uses: mislav/bump-homebrew-formula-action@v4.1
         with:
-          formula-name: auto-rb-recorder
+          formula-name: sessiontape
           homebrew-tap: icherniukh/homebrew-tap
           base-branch: main
-          download-url: https://github.com/icherniukh/auto-rb-recorder/releases/download/${{ github.ref_name }}/auto-rb-recorder-macos-universal.zip
+          download-url: https://github.com/icherniukh/sessiontape/releases/download/${{ github.ref_name }}/sessiontape-macos-universal.zip
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  build_windows_release:
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          uv venv
+          .venv\Scripts\activate
+          uv pip install pyinstaller
+
+      - name: Install WiX Toolset
+        run: dotnet tool install --global wix
+
+      - name: Build and Package
+        run: |
+          .venv\Scripts\activate
+          powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: 1
+
+      - name: Generate Checksums
+        shell: pwsh
+        run: |
+          Get-FileHash dist\sessiontape.msi -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  sessiontape.msi" } |
+            Set-Content dist\sessiontape.msi.sha256
+          if (Test-Path dist\sessiontape-setup.exe) {
+            Get-FileHash dist\sessiontape-setup.exe -Algorithm SHA256 |
+              ForEach-Object { "$($_.Hash)  sessiontape-setup.exe" } |
+              Set-Content dist\sessiontape-setup.exe.sha256
+          }
+
+      - name: Collect Release Assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          Copy-Item dist\sessiontape.msi release-assets\
+          Copy-Item dist\sessiontape.msi.sha256 release-assets\
+          if (Test-Path dist\sessiontape-setup.exe) {
+            Copy-Item dist\sessiontape-setup.exe release-assets\
+            Copy-Item dist\sessiontape-setup.exe.sha256 release-assets\
+          }
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2.6.1
+        with:
+          files: release-assets/*

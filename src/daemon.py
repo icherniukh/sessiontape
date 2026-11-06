@@ -15,13 +15,13 @@ from src.events import (CaptureDied, EventQueue, ExportFailed, ExportFinished,
 from src.process_monitor import ProcessMonitor
 from src.recorder_core import ExportManager, recover_orphaned_raw_files
 
-log = logging.getLogger("rb-recorder")
+log = logging.getLogger("sessiontape")
 
-_STALE_PROCESS_NAMES = {"audiotee", "mac-capture", "auto-rb-recorder"}
+_STALE_PROCESS_NAMES = {"mac-capture", "sessiontape"}
 
 
 def _cleanup_stale_processes() -> None:
-    """Kill any leftover audiotee or auto-rb-recorder processes from a previous run."""
+    """Kill any leftover mac-capture or sessiontape processes from a previous run."""
     current_pid = os.getpid()
     own_pids = {current_pid, os.getppid()}
     for proc in psutil.process_iter(["pid", "name"]):
@@ -114,7 +114,7 @@ class RecorderDaemon:
         signal.signal(signal.SIGTERM, _on_signal)
         signal.signal(signal.SIGINT, _on_signal)
 
-        log.info(f"--- rb-recorder started · PID {os.getpid()} ---")
+        log.info(f"--- sessiontape started · PID {os.getpid()} ---")
 
         # Start the process monitor thread
         self._monitor.start()
@@ -167,13 +167,13 @@ class RecorderDaemon:
                     if self._current_pid:
                         if self._restart_count >= 5:
                             log.critical(
-                                f"Capture helper died (exit code {event.exit_code}) and restart limit "
+                                f"Capture process exited (exit code {event.exit_code}) and restart limit "
                                 f"({self._restart_count}) reached. Giving up."
                             )
                         else:
                             self._restart_count += 1
                             log.warning(
-                                f"Capture helper died (exit code {event.exit_code}). "
+                                f"Capture process exited (exit code {event.exit_code}). "
                                 f"Restarting capture (attempt {self._restart_count})."
                             )
                             self._stop_capture(keep_pid=True)
