@@ -6,6 +6,7 @@ from typing import Optional
 
 import psutil
 
+from src.backends.macos_capture import MacCaptureOptions
 from src.capture import EXIT_FORMAT_CHANGED, EXIT_FORMAT_MISMATCH, AudioCapture
 from src.config import Config
 from src.events import (
@@ -22,6 +23,7 @@ from src.events import (
     ShutdownRequested,
     TapBroken,
 )
+from src.platform import get_platform_backend
 from src.process_monitor import ProcessMonitor
 from src.recorder_core import ExportManager, recover_orphaned_raw_files
 
@@ -81,7 +83,15 @@ class RecorderDaemon:
             output_dir=self.config.output_dir,
             queue=self._queue,
             sample_rate=self.config.sample_rate,
-            backend_name=self.config.capture_backend,
+            backend=get_platform_backend(
+                self.config.capture_backend,
+                mac_options=MacCaptureOptions(
+                    backend_mode=self.config.mac_capture_backend,
+                    metrics=self.config.mac_capture_metrics,
+                    diag=self.config.mac_capture_diag,
+                    log_path=self.config.mac_capture_log,
+                ),
+            ),
             silence_threshold_db=self.config.silence_threshold_db,
             min_silence_duration=self.config.min_silence_duration,
             min_segment_duration=self.config.min_segment_duration,
@@ -89,10 +99,6 @@ class RecorderDaemon:
             export_format=self.config.export_format,
             export_manager=self._export_manager,
             perf_metrics=self.config.perf_metrics,
-            mac_capture_backend=self.config.mac_capture_backend,
-            mac_capture_metrics=self.config.mac_capture_metrics,
-            mac_capture_diag=self.config.mac_capture_diag,
-            mac_capture_log=self.config.mac_capture_log,
         )
         self._capture.start()
 

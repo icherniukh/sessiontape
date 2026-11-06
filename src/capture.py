@@ -44,10 +44,6 @@ class AudioCapture:
         backend_name: str | None = None,
         export_manager: ExportManager | None = None,
         perf_metrics: bool = True,
-        mac_capture_backend: str = "auto",
-        mac_capture_metrics: bool = True,
-        mac_capture_diag: bool = False,
-        mac_capture_log: str = "",
     ):
         self.pid = pid
         self.output_dir = output_dir
@@ -55,13 +51,7 @@ class AudioCapture:
         self.sample_rate = sample_rate
         self.source_name = source_name
         self.is_recording = False
-        self.backend = backend or get_platform_backend(
-            backend_name,
-            mac_capture_backend=mac_capture_backend,
-            mac_capture_metrics=mac_capture_metrics,
-            mac_capture_diag=mac_capture_diag,
-            mac_capture_log=mac_capture_log,
-        )
+        self.backend = backend or get_platform_backend(backend_name)
 
         self.recorder = PCMStreamRecorder(
             output_dir=output_dir,

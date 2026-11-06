@@ -129,16 +129,18 @@ class TestAudioCapture(unittest.TestCase):
 
     @patch("src.backends.macos_capture.subprocess.Popen")
     def test_mac_capture_backend_passes_cli_flags(self, mock_popen):
-        from src.backends.macos_capture import MacCaptureBackend
+        from src.backends.macos_capture import MacCaptureBackend, MacCaptureOptions
 
         mock_proc = MagicMock()
         mock_popen.return_value = mock_proc
 
         backend = MacCaptureBackend(
-            backend_mode="tap",
-            metrics=False,
-            diag=True,
-            log_path="/tmp/mac-capture.log",
+            MacCaptureOptions(
+                backend_mode="tap",
+                metrics=False,
+                diag=True,
+                log_path="/tmp/mac-capture.log",
+            )
         )
         backend.start(12345, 48000)
 
