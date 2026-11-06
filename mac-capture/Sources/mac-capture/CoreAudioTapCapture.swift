@@ -2,12 +2,24 @@ import AppKit
 import AudioToolbox
 import CoreAudio
 import Foundation
+import Synchronization
 
 /// Thrown by `CoreAudioTapCapture.start()` (after teardown) when the tap's sample rate differs
 /// from the requested rate. main.swift maps it to `FORMAT_MISMATCH ...` on stderr + exit status 3.
 struct TapFormatMismatch: Error {
     let tapRate: Int
     let requestedRate: Int
+}
+
+/// Exit status used when the tap format changes mid-session (`FORMAT_CHANGED ...` on stderr).
+/// The reader treats it as restartable, unlike the startup mismatch status 3.
+let tapFormatChangedExitStatus: Int32 = 4
+
+/// Counters bumped by HAL listener blocks. Lock-free: the overload listener is invoked
+/// synchronously from the IO thread.
+private final class HALCounters: @unchecked Sendable {
+    let overloads = Atomic<Int>(0)
+    let ioStopped = Atomic<Int>(0)
 }
 
 @available(macOS 14.2, *)
@@ -27,6 +39,31 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
     // Validated tap layout; written before AudioDeviceStart, read-only in the IO proc.
     private var tapChannels = 2
     private var tapInterleaved = true
+    private var validatedFormat = AudioStreamBasicDescription()
+
+    private let teardownLock = NSLock()
+    private var didTeardown = false
+    private let stopping = Atomic<Bool>(false)
+    private let formatChangeFired = Atomic<Bool>(false)
+    private let counters = HALCounters()
+
+    /// Queue for IO-thread notifications. The HAL dispatches `kAudioDeviceProcessorOverload`
+    /// synchronously from the IO thread, so only atomic increments may run here. Nothing that
+    /// teardown waits on may share this queue.
+    private let halQueue = DispatchQueue(
+        label: "dev.icherniukh.sessiontape.tap.hal", qos: .userInteractive)
+    /// Queue for everything else (format and device changes). Handlers never call teardown
+    /// directly; they hop to a global queue so `teardown()` can drain this one without deadlock.
+    private let controlQueue = DispatchQueue(
+        label: "dev.icherniukh.sessiontape.tap.control", qos: .utility)
+
+    private struct Listener {
+        let objectID: AudioObjectID
+        var address: AudioObjectPropertyAddress
+        let queue: DispatchQueue
+        let block: AudioObjectPropertyListenerBlock
+    }
+    private var listeners: [Listener] = []
 
     var isBroken: Bool { drainThread.broken }
 
@@ -40,13 +77,23 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         self.fastConverter = FastPCMConverter(sampleRate: sampleRate)
     }
 
-    private func resolveBundleID() -> String {
+    /// How the target PID maps to a tap: by bundle ID (macOS 26), by process object, or not at all.
+    private enum TargetProcess {
+        case bundle(String)
+        case noBundle
+        case notFound
+    }
+
+    private func lookupTargetProcess() -> TargetProcess {
         if let app = NSRunningApplication(processIdentifier: pid),
             let bundleID = app.bundleIdentifier, !bundleID.isEmpty
         {
-            return bundleID
+            return .bundle(bundleID)
         }
-        return "com.pioneerdj.rekordboxdj"
+        // No bundle ID (CLI tools such as afplay): the process may still exist. EPERM means it
+        // exists but belongs to another user.
+        if kill(pid, 0) == 0 || errno == EPERM { return .noBundle }
+        return .notFound
     }
 
     private func resolveProcessObject() -> AudioObjectID {
@@ -88,163 +135,186 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         return uid as String
     }
 
-    private func resolveActiveDeviceUID() -> (deviceID: AudioObjectID, uid: String)? {
-        let processObj = resolveProcessObject()
-        self.targetProcessObject = processObj
+    /// UIDs of the output devices the process currently plays to (informational only: the tap
+    /// itself is not pinned to any of them).
+    private func processOutputDeviceUIDs(_ processObj: AudioObjectID) -> [String] {
+        var devAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyDevices,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var devSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(processObj, &devAddress, 0, nil, &devSize) == noErr,
+            devSize > 0
+        else { return [] }
+        var devices = [AudioObjectID](
+            repeating: 0, count: Int(devSize) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(processObj, &devAddress, 0, nil, &devSize, &devices)
+            == noErr
+        else { return [] }
+        return devices.map { queryDeviceUID($0) ?? "device#\($0)" }
+    }
 
-        if processObj != kAudioObjectUnknown {
-            var devAddress = AudioObjectPropertyAddress(
-                mSelector: kAudioProcessPropertyDevices,
-                mScope: kAudioObjectPropertyScopeOutput,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var devSize: UInt32 = 0
-            let devStatus = AudioObjectGetPropertyDataSize(
-                processObj, &devAddress, 0, nil, &devSize)
-            if devStatus == noErr && devSize > 0 {
-                let count = Int(devSize) / MemoryLayout<AudioObjectID>.size
-                var devices = [AudioObjectID](repeating: 0, count: count)
-                if AudioObjectGetPropertyData(
-                    processObj, &devAddress, 0, nil, &devSize, &devices) == noErr,
-                    let firstDev = devices.first
-                {
-                    if let uid = queryDeviceUID(firstDev) {
-                        return (firstDev, uid)
-                    }
-                }
-            }
-        }
-
-        // Fallback to system default output device
-        var defaultDevAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+    private func readTapFormat(_ tap: AudioObjectID) -> AudioStreamBasicDescription? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyFormat,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var defaultDevID: AudioObjectID = 0
-        var defaultSize = UInt32(MemoryLayout<AudioObjectID>.size)
-        if AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &defaultDevAddress,
-            0,
-            nil,
-            &defaultSize,
-            &defaultDevID
-        ) == noErr {
-            if let uid = queryDeviceUID(defaultDevID) {
-                return (defaultDevID, uid)
-            }
+        var format = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioObjectGetPropertyData(tap, &address, 0, nil, &size, &format) == noErr else {
+            return nil
         }
-
-        return nil
+        return format
     }
+
+    private static func coreAudioError(_ code: Int, _ message: String) -> NSError {
+        NSError(
+            domain: "CoreAudioTap", code: code,
+            userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    // MARK: - Listeners
+
+    private func addListener(
+        _ objectID: AudioObjectID, selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+        queue: DispatchQueue, name: String, block: @escaping AudioObjectPropertyListenerBlock
+    ) {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectAddPropertyListenerBlock(objectID, &address, queue, block)
+        if status == noErr {
+            listeners.append(
+                Listener(objectID: objectID, address: address, queue: queue, block: block))
+        } else {
+            logError("Failed to add \(name) listener: \(osStatusDescription(status))")
+        }
+    }
+
+    private func removeListeners() {
+        for var listener in listeners {
+            AudioObjectRemovePropertyListenerBlock(
+                listener.objectID, &listener.address, listener.queue, listener.block)
+        }
+        listeners.removeAll()
+    }
+
+    /// Process device list changed. Informational: the unpinned tap follows the process.
+    private func handleProcessDevicesChange(_ processObj: AudioObjectID) {
+        guard !stopping.load(ordering: .relaxed) else { return }
+        let uids = processOutputDeviceUIDs(processObj)
+        logInfo(
+            "Process output devices changed: \(uids.isEmpty ? "none" : uids.joined(separator: ", "))"
+        )
+    }
+
+    /// The tap format moved. Anything that differs from what the IO proc was validated against
+    /// (rate, channels, layout) invalidates the capture: exit with the restartable status.
+    private func handleTapFormatChange(_ tap: AudioObjectID) {
+        guard !stopping.load(ordering: .relaxed) else { return }
+        guard let now = readTapFormat(tap) else {
+            logDebug("Tap format notification, but the format could not be read; ignoring")
+            return
+        }
+        let old = validatedFormat
+        let same =
+            now.mSampleRate == old.mSampleRate && now.mFormatID == old.mFormatID
+            && now.mFormatFlags == old.mFormatFlags
+            && now.mChannelsPerFrame == old.mChannelsPerFrame
+            && now.mBitsPerChannel == old.mBitsPerChannel
+        guard !same else {
+            logDebug("Tap format notification with unchanged format; ignoring")
+            return
+        }
+        guard !formatChangeFired.exchange(true, ordering: .sequentiallyConsistent) else { return }
+
+        // Contract with the reader: exact line on stderr, exit status 4 (restartable).
+        fputs(
+            "FORMAT_CHANGED tap=\(Int(now.mSampleRate.rounded())) requested=\(sampleRate)\n",
+            stderr)
+        logError(
+            "Tap format changed mid-session: \(Int(old.mSampleRate))Hz/\(old.mChannelsPerFrame)ch -> \(Int(now.mSampleRate))Hz/\(now.mChannelsPerFrame)ch flags=0x\(String(now.mFormatFlags, radix: 16)); exiting for restart"
+        )
+        DispatchQueue.global().async { [self] in
+            teardown()
+            exit(tapFormatChangedExitStatus)
+        }
+    }
+
+    // MARK: - Start
 
     func start() async throws {
         drainThread.start()
+        do {
+            try startTap()
+        } catch {
+            // Every failure (including the exit-3 format mismatch) leaves nothing behind.
+            teardown()
+            throw error
+        }
+    }
 
-        let bundleID = resolveBundleID()
-        logInfo("Configuring CoreAudio process tap for bundle: \(bundleID) (PID: \(pid))")
-
+    private func startTap() throws {
         let desc = CATapDescription()
-        var tapsByBundleID = false
         // bundleIDs/isProcessRestoreEnabled exist only in the macOS 26 SDK (Swift 6.2 / Xcode 26).
         // Older SDKs build the PID-based path only.
-        #if compiler(>=6.2)
-        if #available(macOS 26.0, *) {
-            desc.bundleIDs = [bundleID]
-            desc.isProcessRestoreEnabled = true
-            tapsByBundleID = true
+        var tapsByBundleID = false
+        switch lookupTargetProcess() {
+        case .notFound:
+            throw Self.coreAudioError(
+                2, "No process with PID \(pid); refusing to tap anything else")
+        case .bundle(let bundleID):
+            logInfo("Configuring CoreAudio process tap for bundle: \(bundleID) (PID: \(pid))")
+            #if compiler(>=6.2)
+            if #available(macOS 26.0, *) {
+                desc.bundleIDs = [bundleID]
+                desc.isProcessRestoreEnabled = true
+                tapsByBundleID = true
+            }
+            #endif
+        case .noBundle:
+            logInfo("PID \(pid) has no bundle ID; configuring CoreAudio process tap by PID")
         }
-        #endif
+        let processObj = resolveProcessObject()
+        self.targetProcessObject = processObj
         if !tapsByBundleID {
-            let procObj = resolveProcessObject()
-            guard procObj != kAudioObjectUnknown else {
-                throw NSError(
-                    domain: "CoreAudioTap",
-                    code: 1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey:
-                            "Failed to resolve ProcessObject for PID \(pid)"
-                    ]
+            guard processObj != kAudioObjectUnknown else {
+                throw Self.coreAudioError(
+                    1,
+                    "Failed to resolve audio ProcessObject for PID \(pid) (process is not an audio client)"
                 )
             }
-            desc.processes = [procObj]
+            desc.processes = [processObj]
         }
         desc.isPrivate = true
         desc.muteBehavior = .unmuted
         desc.isMixdown = true
-
-        if let active = resolveActiveDeviceUID() {
-            desc.deviceUID = active.uid
+        // deviceUID stays unset on purpose: per CATapDescription.h it is set only when a tap
+        // "only taps a specific hardware device". Unset, the tap mixes the process output
+        // regardless of which device the process plays to, so it follows a device switch.
+        if processObj != kAudioObjectUnknown {
+            let uids = processOutputDeviceUIDs(processObj)
             logInfo(
-                "CoreAudio tap anchored to active device: \(active.uid) (ID: \(active.deviceID))"
-            )
-        } else {
-            logInfo(
-                "No active output device found for PID \(pid); defaulting tap to system output"
+                "CoreAudio tap is not pinned to a device; process output devices now: \(uids.isEmpty ? "none" : uids.joined(separator: ", "))"
             )
         }
 
         var newTapID: AudioObjectID = kAudioObjectUnknown
         let tapStatus = AudioHardwareCreateProcessTap(desc, &newTapID)
         guard tapStatus == noErr else {
-            drainThread.stop()
-            throw NSError(
-                domain: "CoreAudioTap",
-                code: Int(tapStatus),
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "AudioHardwareCreateProcessTap failed: \(osStatusDescription(tapStatus))"
-                ]
-            )
+            throw Self.coreAudioError(
+                Int(tapStatus),
+                "AudioHardwareCreateProcessTap failed: \(osStatusDescription(tapStatus))")
         }
         self.tapID = newTapID
 
-        let aggUID = UUID().uuidString
-        let aggDesc: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "sessiontape-tap-\(aggUID)",
-            kAudioAggregateDeviceUIDKey: aggUID,
-            kAudioAggregateDeviceIsPrivateKey: 1 as NSNumber,
-            kAudioAggregateDeviceIsStackedKey: 0 as NSNumber,
-        ]
-        var aggDevID: AudioObjectID = 0
-        let aggStatus = AudioHardwareCreateAggregateDevice(
-            aggDesc as CFDictionary, &aggDevID)
-        guard aggStatus == noErr else {
-            AudioHardwareDestroyProcessTap(newTapID)
-            self.tapID = kAudioObjectUnknown
-            drainThread.stop()
-            throw NSError(
-                domain: "CoreAudioTap",
-                code: Int(aggStatus),
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "AudioHardwareCreateAggregateDevice failed: \(osStatusDescription(aggStatus))"
-                ]
-            )
-        }
-        self.aggregateDeviceID = aggDevID
-
-        var formatAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioTapPropertyFormat,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var tapFormat = AudioStreamBasicDescription()
-        var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        let formatStatus = AudioObjectGetPropertyData(
-            newTapID, &formatAddress, 0, nil, &formatSize, &tapFormat
-        )
-        guard formatStatus == noErr else {
-            try? await stop()
-            throw NSError(
-                domain: "CoreAudioTap",
-                code: Int(formatStatus),
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "Reading kAudioTapPropertyFormat failed: \(osStatusDescription(formatStatus))"
-                ]
-            )
+        guard let tapFormat = readTapFormat(newTapID) else {
+            throw Self.coreAudioError(0, "Reading kAudioTapPropertyFormat failed")
         }
         logInfo(
             "CoreAudio tap format: \(Int(tapFormat.mSampleRate))Hz, \(tapFormat.mChannelsPerFrame) channels, flags=0x\(String(tapFormat.mFormatFlags, radix: 16))"
@@ -252,7 +322,6 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
 
         let tapRate = Int(tapFormat.mSampleRate.rounded())
         if tapRate != sampleRate {
-            try? await stop()
             throw TapFormatMismatch(tapRate: tapRate, requestedRate: sampleRate)
         }
         let isFloat32PCM =
@@ -261,18 +330,31 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
             && tapFormat.mBitsPerChannel == 32
         guard isFloat32PCM, tapFormat.mChannelsPerFrame == 1 || tapFormat.mChannelsPerFrame == 2
         else {
-            try? await stop()
-            throw NSError(
-                domain: "CoreAudioTap",
-                code: 2,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "Unsupported tap format: formatID=\(tapFormat.mFormatID) flags=0x\(String(tapFormat.mFormatFlags, radix: 16)) bits=\(tapFormat.mBitsPerChannel) channels=\(tapFormat.mChannelsPerFrame) (need Float32 PCM, 1 or 2 channels)"
-                ]
+            throw Self.coreAudioError(
+                2,
+                "Unsupported tap format: formatID=\(tapFormat.mFormatID) flags=0x\(String(tapFormat.mFormatFlags, radix: 16)) bits=\(tapFormat.mBitsPerChannel) channels=\(tapFormat.mChannelsPerFrame) (need Float32 PCM, 1 or 2 channels)"
             )
         }
+        validatedFormat = tapFormat
         tapChannels = Int(tapFormat.mChannelsPerFrame)
         tapInterleaved = (tapFormat.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
+
+        // Mid-session format changes (e.g. the output device switched to another sample rate).
+        let tapForListener = newTapID
+        addListener(
+            newTapID, selector: kAudioTapPropertyFormat, queue: controlQueue, name: "tap format"
+        ) { [weak self] _, _ in
+            self?.handleTapFormatChange(tapForListener)
+        }
+        if processObj != kAudioObjectUnknown {
+            addListener(
+                processObj, selector: kAudioProcessPropertyDevices,
+                scope: kAudioObjectPropertyScopeOutput, queue: controlQueue,
+                name: "process devices"
+            ) { [weak self] _, _ in
+                self?.handleProcessDevicesChange(processObj)
+            }
+        }
 
         var tapUIDAddress = AudioObjectPropertyAddress(
             mSelector: kAudioTapPropertyUID,
@@ -285,45 +367,53 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
             AudioObjectGetPropertyData(newTapID, &tapUIDAddress, 0, nil, &tapUIDSize, ptr)
         }
         guard uidStatus == noErr else {
-            AudioHardwareDestroyAggregateDevice(aggDevID)
-            AudioHardwareDestroyProcessTap(newTapID)
-            self.aggregateDeviceID = kAudioObjectUnknown
-            self.tapID = kAudioObjectUnknown
-            drainThread.stop()
-            throw NSError(
-                domain: "CoreAudioTap",
-                code: Int(uidStatus),
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "AudioObjectGetPropertyData (tap UID) failed: \(osStatusDescription(uidStatus))"
-                ]
-            )
+            throw Self.coreAudioError(
+                Int(uidStatus),
+                "AudioObjectGetPropertyData (tap UID) failed: \(osStatusDescription(uidStatus))")
         }
 
-        var tapListAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioAggregateDevicePropertyTapList,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var tapArray = [tapUID] as CFArray
-        let tapArraySize = UInt32(MemoryLayout<CFArray>.size)
-        let setStatus = withUnsafePointer(to: &tapArray) { ptr in
-            AudioObjectSetPropertyData(aggDevID, &tapListAddress, 0, nil, tapArraySize, ptr)
-        }
-        guard setStatus == noErr else {
-            AudioHardwareDestroyAggregateDevice(aggDevID)
-            AudioHardwareDestroyProcessTap(newTapID)
-            self.aggregateDeviceID = kAudioObjectUnknown
-            self.tapID = kAudioObjectUnknown
-            drainThread.stop()
-            throw NSError(
-                domain: "CoreAudioTap",
-                code: Int(setStatus),
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "AudioObjectSetPropertyData (tap list) failed: \(osStatusDescription(setStatus))"
+        // The tap list goes in the creation dictionary, so the aggregate never exists without its
+        // tap. Private: invisible to other processes. kAudioAggregateDeviceTapAutoStartKey is
+        // deliberately not set: it makes AudioDeviceStart wait for the first tapped audio, but the
+        // reader needs a continuous (silent) stream to detect the DJ stopping.
+        let aggUID = UUID().uuidString
+        let aggDesc: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "sessiontape-tap-\(aggUID)",
+            kAudioAggregateDeviceUIDKey: aggUID,
+            kAudioAggregateDeviceIsPrivateKey: 1 as NSNumber,
+            kAudioAggregateDeviceIsStackedKey: 0 as NSNumber,
+            kAudioAggregateDeviceTapListKey: [
+                [
+                    kAudioSubTapUIDKey: tapUID as String,
+                    kAudioSubTapDriftCompensationKey: 1 as NSNumber,
                 ]
-            )
+            ],
+        ]
+        var aggDevID: AudioObjectID = 0
+        let aggStatus = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &aggDevID)
+        guard aggStatus == noErr else {
+            throw Self.coreAudioError(
+                Int(aggStatus),
+                "AudioHardwareCreateAggregateDevice failed: \(osStatusDescription(aggStatus))")
+        }
+        self.aggregateDeviceID = aggDevID
+
+        reserveScratch(for: aggDevID)
+
+        // Overload is dispatched synchronously from the IO thread: atomic increment only.
+        let halCounters = counters
+        addListener(
+            aggDevID, selector: kAudioDeviceProcessorOverload, queue: halQueue,
+            name: "processor overload"
+        ) { _, _ in
+            halCounters.overloads.wrappingAdd(1, ordering: .relaxed)
+        }
+        addListener(
+            aggDevID, selector: kAudioDevicePropertyIOStoppedAbnormally, queue: controlQueue,
+            name: "IO stopped abnormally"
+        ) { _, _ in
+            halCounters.ioStopped.wrappingAdd(1, ordering: .relaxed)
+            logError("HAL reported IO stopped abnormally on the capture aggregate device")
         }
 
         var procID: AudioDeviceIOProcID?
@@ -339,44 +429,47 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
             &procID
         )
         guard procStatus == noErr, let validProcID = procID else {
-            AudioHardwareDestroyAggregateDevice(aggDevID)
-            AudioHardwareDestroyProcessTap(newTapID)
-            self.aggregateDeviceID = kAudioObjectUnknown
-            self.tapID = kAudioObjectUnknown
-            drainThread.stop()
-            throw NSError(
-                domain: "CoreAudioTap",
-                code: Int(procStatus),
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "AudioDeviceCreateIOProcID failed: \(osStatusDescription(procStatus))"
-                ]
-            )
+            throw Self.coreAudioError(
+                Int(procStatus),
+                "AudioDeviceCreateIOProcID failed: \(osStatusDescription(procStatus))")
         }
         self.ioProcID = validProcID
 
         let startStatus = AudioDeviceStart(aggDevID, validProcID)
         guard startStatus == noErr else {
-            AudioDeviceDestroyIOProcID(aggDevID, validProcID)
-            AudioHardwareDestroyAggregateDevice(aggDevID)
-            AudioHardwareDestroyProcessTap(newTapID)
-            self.ioProcID = nil
-            self.aggregateDeviceID = kAudioObjectUnknown
-            self.tapID = kAudioObjectUnknown
-            drainThread.stop()
-            throw NSError(
-                domain: "CoreAudioTap",
-                code: Int(startStatus),
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "AudioDeviceStart failed: \(osStatusDescription(startStatus))"
-                ]
-            )
+            throw Self.coreAudioError(
+                Int(startStatus),
+                "AudioDeviceStart failed: \(osStatusDescription(startStatus))")
         }
 
         logInfo(
             "CoreAudio process tap started successfully (tap ID: \(newTapID), aggregate ID: \(aggDevID))"
         )
+    }
+
+    /// Sizes the converter scratch from the aggregate's largest IO buffer so the IO proc never
+    /// has to truncate. Runs before AudioDeviceStart (allocation is not allowed on the IO thread).
+    private func reserveScratch(for device: AudioObjectID) {
+        let floorFrames = 16384
+        let ceilingFrames = 1 << 20
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSizeRange,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var range = AudioValueRange()
+        var size = UInt32(MemoryLayout<AudioValueRange>.size)
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &range)
+        var frames = floorFrames
+        if status == noErr, range.mMaximum.isFinite, range.mMaximum > 0 {
+            frames = max(floorFrames, min(Int(range.mMaximum), ceilingFrames))
+            logInfo("Aggregate IO buffer frame size range max: \(Int(range.mMaximum)) frames")
+        } else {
+            logInfo(
+                "Aggregate IO buffer frame size range unavailable (\(osStatusDescription(status))); using \(floorFrames) frames"
+            )
+        }
+        fastConverter.reserve(maxFrames: frames)
     }
 
     func handleAudioIO(inputData: UnsafePointer<AudioBufferList>) -> OSStatus {
@@ -395,6 +488,21 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
     }
 
     func stop() async throws {
+        teardown()
+    }
+
+    /// Idempotent; safe to call from any thread and more than once. Listeners are removed first
+    /// and the control queue drained, so no handler runs against destroyed objects.
+    private func teardown() {
+        stopping.store(true, ordering: .sequentiallyConsistent)
+        teardownLock.lock()
+        defer { teardownLock.unlock() }
+        guard !didTeardown else { return }
+        didTeardown = true
+
+        removeListeners()
+        controlQueue.sync {}
+
         if let procID = ioProcID, aggregateDeviceID != kAudioObjectUnknown {
             AudioDeviceStop(aggregateDeviceID, procID)
             AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
@@ -418,7 +526,14 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         metrics.emitIfDue(
             bytesWritten: drainThread.bytesWritten,
             droppedWrites: outboundQueue.droppedChunks,
-            emit: { logInfo($0) },
+            emit: { [self] line in
+                // Per-window deltas, like the other fields.
+                let overloads = counters.overloads.exchange(0, ordering: .relaxed)
+                let stopped = counters.ioStopped.exchange(0, ordering: .relaxed)
+                let truncated = fastConverter.truncatedBuffers.exchange(0, ordering: .relaxed)
+                logInfo(
+                    "\(line) hal_overload=\(overloads) io_stopped=\(stopped) trunc=\(truncated)")
+            },
             force: force
         )
     }
