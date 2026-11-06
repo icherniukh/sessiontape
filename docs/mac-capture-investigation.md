@@ -2,17 +2,20 @@
 
 ## Scope
 
-This work is being done only in the dedicated worktree:
+The original investigation started in a dedicated worktree, but the useful
+capture-binary changes and evidence files have since been moved onto `main`.
 
-- `/Users/ivan/proj/sessiontape/.worktrees/codex-mac-capture-fix`
+Current source of truth:
 
-Do not continue `mac-capture` edits in the main repo because the main checkout is being refactored separately.
+- [main.swift](/Users/ivan/proj/sessiontape/mac-capture/Sources/mac-capture/main.swift)
+- [capture-audio-popping-logs.sh](/Users/ivan/proj/sessiontape/scripts/capture-audio-popping-logs.sh)
+- [captured_qt.log](/Users/ivan/proj/sessiontape/docs/evidence/captured_qt.log)
 
 ## Branch / Worktree State
 
 - Main repo branch: `main`
-- Menu bar rebase worktree: `/Users/ivan/proj/sessiontape/.worktrees/macos-menubar-review`
-- mac-capture investigation worktree: `/Users/ivan/proj/sessiontape/.worktrees/codex-mac-capture-fix`
+- Future menu bar work is on the separate `macos-menubar-clean` branch/worktree.
+- Any renewed low-level `mac-capture` experiments should happen on an isolated branch or worktree, then be merged back intentionally.
 
 ## High-Level History
 
@@ -26,15 +29,15 @@ Capture backend history reconstructed from git:
 Important contradiction:
 
 - `AGENTS.md` says `ProcTap/ScreenCaptureKit returns all zeros for Rekordbox` and says not to revisit it.
-- At the time of investigation, the active runtime used `mac-capture`, which is a ScreenCaptureKit helper.
+- At the time of investigation, the active runtime used `mac-capture`, which is a ScreenCaptureKit capture binary.
 
 So `mac-capture` is a later tactical pivot back to SCK despite earlier notes rejecting that path.
 
 ## What `mac-capture` Is
 
-The Swift helper in:
+The Swift capture binary in:
 
-- [main.swift](/Users/ivan/proj/sessiontape/.worktrees/codex-mac-capture-fix/mac-capture/Sources/mac-capture/main.swift)
+- [main.swift](/Users/ivan/proj/sessiontape/mac-capture/Sources/mac-capture/main.swift)
 
 uses:
 
@@ -45,18 +48,17 @@ uses:
 
 So this is definitely a ScreenCaptureKit-based capture path.
 
-## Current Code Changes In This Worktree
+## Current Main-Branch Capture Binary Shape
 
-### Helper instrumentation
+### Capture-binary instrumentation
 
 Added:
 
 - file-backed diagnostics via `RB_MAC_CAPTURE_LOG`
-- stderr + diag logging helpers
+- stderr + diag logging routines
 - callback timing / buffer format logs
-- explicit filter mode via `RB_MAC_CAPTURE_FILTER_MODE`
 
-### Helper hot-path changes
+### Capture-binary hot-path changes
 
 Added:
 
@@ -64,31 +66,25 @@ Added:
 - `FastPCMConverter` fast path for common float32 stereo SCK buffers
 - `AVAudioConverter` fallback only for unsupported formats
 
-### Filter experiments
+### Checked-in filter shape
 
-Current default:
+The current capture binary always uses:
 
-- `RB_MAC_CAPTURE_FILTER_MODE=display`
+- `SCContentFilter(display: display, including: [targetApp], exceptingWindows: [])`
 
-Optional experimental mode:
-
-- `RB_MAC_CAPTURE_FILTER_MODE=window`
-
-Window mode currently crashes on startup with a CoreGraphics init assertion:
-
-- `Assertion failed: (did_initialize), function CGS_REQUIRE_INIT`
-
-So the capture script forces `display` mode for now.
+Historical filter experiments are still documented later in this file, but the
+checked-in capture binary no longer exposes a runtime `RB_MAC_CAPTURE_FILTER_MODE`
+toggle.
 
 ## Confirmed Runtime Findings
 
 ### `audiotee` is not the active runtime
 
-When live recorder processes were inspected, the active helper was `mac-capture`, not `audiotee`.
+When live recorder processes were inspected, the active capture binary was `mac-capture`, not `audiotee`.
 
-### Clean helper probe can start
+### Clean probe can start
 
-Short direct helper runs against a live Rekordbox PID have shown:
+Short direct runs against a live Rekordbox PID have shown:
 
 - SCK finds Rekordbox
 - stream can start successfully
@@ -134,18 +130,18 @@ From `/Users/ivan/proj/coreaudio_rekordbox.log`:
 This is enough to say:
 
 - the audio popping correlates with a real Rekordbox/CoreAudio overload storm
-- this is not just a harmless helper-side logging issue
+- this is not just a harmless process-side logging issue
 - the failure is stateful and can recur after the initial transition
 
 ### Synchronized capture: `/tmp/rb-audio-popping-captures/20260331-164759`
 
-This is the first fully usable direct-helper repro.
+This is the first fully usable direct-process repro.
 
 What it proves:
 
 - `mac-capture` stayed alive for the whole run
 - `mac-capture.raw` kept growing through the popping periods
-- helper diagnostics stayed normal enough that the helper was not obviously stalling or restarting
+- process diagnostics stayed normal enough that the capture binary was not obviously stalling or restarting
 - Rekordbox entered repeated overload storms anyway
 - `replayd` explicitly created an `AudioTap` aggregate for this SCK session
 
@@ -171,7 +167,7 @@ Key `replayd` evidence from that run:
 Conclusion from this run:
 
 - ScreenCaptureKit on this path still lands on Apple `AudioTap` / aggregate-device machinery under `replayd`
-- the audio popping is not explained by the helper crashing or obviously stopping
+- the audio popping is not explained by the capture process crashing or obviously stopping
 - the strongest current explanation is a Rekordbox/CoreAudio/replayd interaction while the SCK tap is attached
 
 ## Replayd / AudioTap Status
@@ -202,7 +198,7 @@ Configuration:
 
 Result:
 
-- helper remained healthy
+- capture process remained healthy
 - user reported the audio popping was harder to trigger and required more aggressive scrubbing
 - however `replayd` still showed heavy `SCScreenShotSession` / `SLContentStream` churn
 - overloads still occurred in Rekordbox
@@ -227,7 +223,7 @@ Configuration:
 
 Result:
 
-- helper remained healthy
+- capture process remained healthy
 - user reported the audio popping still required fairly aggressive scrubbing
 - `replayd` still showed `newAudioTapForSystemAudioCapture`
 - `replayd` still built an aggregate `AudioTap-*` device
@@ -256,7 +252,7 @@ Interpretation:
 
 Current script:
 
-- [capture-audio-popping-logs.sh](/Users/ivan/proj/sessiontape/.worktrees/codex-mac-capture-fix/scripts/capture-audio-popping-logs.sh)
+- [capture-audio-popping-logs.sh](/Users/ivan/proj/sessiontape/scripts/capture-audio-popping-logs.sh)
 
 It captures:
 
@@ -275,8 +271,8 @@ Current live capture directory at time of writing:
 
 Known limitation in the current script:
 
-- helper liveness is now tracked without the broken subshell `wait`
-- it records that the helper is no longer alive, but it does not capture a precise child exit code
+- process liveness is now tracked without the broken subshell `wait`
+- it records that the capture process is no longer alive, but it does not capture a precise child exit code
 
 ## Current Best Hypotheses
 
@@ -291,9 +287,9 @@ Known limitation in the current script:
 1. Review:
    - `replayd.log`
    - `process-status.log`
-   - helper diag log
+   - capture diag log
    around the exact first overload timestamp.
-2. If needed, add even more targeted helper state logging around:
+2. If needed, add even more targeted process state logging around:
    - stream start
    - first audio callback
    - callback gaps
@@ -305,5 +301,4 @@ Known limitation in the current script:
 ## Non-Goals Right Now
 
 - Do not clean commit history yet.
-- Do not edit the main repo for `mac-capture` work.
-- Do not treat the menu bar rebase worktree as the place for low-level helper experiments.
+- Do not mix low-level capture-binary experiments into the menu bar branch.

@@ -2,7 +2,7 @@ import logging
 import os
 import queue
 import signal
-from typing import Optional
+from typing import Callable, Optional
 
 import psutil
 
@@ -48,6 +48,11 @@ class RecorderDaemon:
             event_sink=self._queue.put,
         )
 
+        # Callbacks set by DaemonBridge (called from background thread)
+        self.on_state_change: Optional[Callable[[str, dict], None]] = None
+        self.on_capture_active: Optional[Callable[[], None]] = None
+        self.on_segment_saved: Optional[Callable[[str, float], None]] = None
+
         self._monitor = ProcessMonitor(
             config.process_name,
             queue=self._queue,
@@ -80,6 +85,8 @@ class RecorderDaemon:
             export_manager=self._export_manager,
         )
         self._capture.start()
+        if self.on_state_change:
+            self.on_state_change("monitoring", {"pid": pid})
 
     def _stop_capture(self, keep_pid: bool = False):
         if not self._capture:
@@ -89,6 +96,8 @@ class RecorderDaemon:
         self._capture = None
         if not keep_pid:
             self._current_pid = None
+        if self.on_state_change:
+            self.on_state_change("idle", {})
 
     def run(self):
         _cleanup_stale_processes()
@@ -158,13 +167,13 @@ class RecorderDaemon:
                     if self._current_pid:
                         if self._restart_count >= 5:
                             log.critical(
-                                f"Capture helper died (exit code {event.exit_code}) and restart limit "
+                                f"Capture process exited (exit code {event.exit_code}) and restart limit "
                                 f"({self._restart_count}) reached. Giving up."
                             )
                         else:
                             self._restart_count += 1
                             log.warning(
-                                f"Capture helper died (exit code {event.exit_code}). "
+                                f"Capture process exited (exit code {event.exit_code}). "
                                 f"Restarting capture (attempt {self._restart_count})."
                             )
                             self._stop_capture(keep_pid=True)
@@ -192,6 +201,8 @@ class RecorderDaemon:
 
                 elif isinstance(event, SegmentOpened):
                     log.info(f"Segment opened: {event.raw_path}")
+                    if self.on_capture_active:
+                        self.on_capture_active()
 
                 elif isinstance(event, SegmentClosed):
                     if event.discarded:
@@ -214,6 +225,8 @@ class RecorderDaemon:
                 elif isinstance(event, ExportFinished):
                     phase = "Recovery export" if event.recovery else "Export"
                     log.info(f"{phase} finished: {event.output_path}")
+                    if self.on_segment_saved:
+                        self.on_segment_saved(event.output_path, event.duration_seconds)
 
                 elif isinstance(event, ExportFailed):
                     phase = "Recovery export" if event.recovery else "Export"
@@ -223,3 +236,9 @@ class RecorderDaemon:
             self._monitor.stop()
             self._export_manager.shutdown()
             log.info("Daemon exit.")
+
+    def shutdown(self) -> None:
+        try:
+            self._queue.put_nowait(ShutdownRequested())
+        except queue.Full:
+            pass

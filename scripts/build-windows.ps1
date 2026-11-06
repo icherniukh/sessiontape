@@ -6,12 +6,12 @@ Set-Location $ProjectRoot
 
 $CaptureExe = "windows-capture\sessiontape-capture-win.exe"
 if (Test-Path $CaptureExe) {
-    Write-Host "Windows capture helper already built, skipping."
+    Write-Host "Windows capture binary already built, skipping."
 } else {
-    Write-Host "Building Windows capture helper..."
+    Write-Host "Building Windows capture binary..."
     & .\windows-capture\build.ps1
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to build capture helper."
+        Write-Error "Failed to build capture binary."
     }
 }
 
