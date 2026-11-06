@@ -14,7 +14,7 @@ class WindowsCaptureBackend(CaptureBackend):
     def start(self, pid: int, sample_rate: int) -> subprocess.Popen:
         exe = _find_executable("sessiontape-capture-win.exe")
         cmd = [exe, "--pid", str(pid), "--sample-rate", str(sample_rate)]
-        log.info(f"Launching capture helper: {' '.join(cmd)}")
+        log.info(f"Launching capture executable: {' '.join(cmd)}")
         
         kwargs = {}
         if sys.platform == "win32":

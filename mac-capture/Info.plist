@@ -8,6 +8,8 @@
     <string>mac-capture</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Needs to capture Rekordbox audio output.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Needs to capture Rekordbox audio output.</string>
 </dict>

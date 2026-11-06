@@ -76,15 +76,15 @@ Refactor the code into a small cross-platform core and thin platform backends:
 - A platform-neutral recorder core that consumes PCM chunks.
 - A platform-neutral process monitor API.
 - A macOS backend that preserves the current `audiotee` subprocess model.
-- A Windows backend that uses a small native helper executable for per-process loopback capture.
+- A Windows backend that uses a small native capture executable for per-process loopback capture.
 
 The design intentionally keeps Python out of the Windows audio API hot path. Python remains responsible for orchestration, chunk processing, segmentation, and export. Native code is used only where Windows audio capture is inherently platform-specific.
 
-## Why A Native Windows Helper
+## Why A Native Windows Capture Executable
 
 Windows per-process audio capture is the hard part. The closest analogue to the existing macOS implementation is WASAPI process loopback capture.
 
-Using a small native helper has these advantages:
+Using a small native capture executable has these advantages:
 
 - Matches the existing `audiotee -> stdout PCM` contract.
 - Minimizes changes to the Python recorder flow.
@@ -180,7 +180,7 @@ This should be cold-path code only.
 
 ### Backend Choice
 
-Preferred approach: a native helper executable, tentatively `sessiontape-capture-win.exe`, that:
+Preferred approach: a native capture executable, tentatively `sessiontape-capture-win.exe`, that:
 
 - accepts a target PID
 - captures only that process tree's rendered audio using Windows process loopback APIs
@@ -192,7 +192,7 @@ This mirrors the existing `audiotee` integration model closely enough that the P
 
 ### Contract
 
-The helper should provide:
+The capture executable should provide:
 
 - `s16le`
 - stereo
@@ -201,7 +201,7 @@ The helper should provide:
 - stable exit codes
 - a useful error when process loopback is unavailable or unsupported
 
-If sample rate conversion must happen in the helper, it should be done there once. The Python side should continue to assume a stable input format.
+If sample rate conversion must happen in the capture executable, it should be done there once. The Python side should continue to assume a stable input format.
 
 ### Windows Compatibility
 
@@ -275,7 +275,7 @@ Planned deliverables:
 
 ## Packaging
 
-Windows packaging should mirror the macOS packaging philosophy: ship a single executable app bundle where practical, with the capture helper included alongside the main binary.
+Windows packaging should mirror the macOS packaging philosophy: ship a single executable app bundle where practical, with the capture binary included alongside the main binary.
 
 Expected build changes:
 
@@ -345,7 +345,7 @@ Exit criteria:
 
 ### Phase 2: Windows Capture Prototype
 
-- Build a minimal native helper that captures one target process to `stdout`.
+- Build a minimal native capture executable that captures one target process to `stdout`.
 - Prove Rekordbox audio is actually capturable on Windows.
 - Validate process identity assumptions and child-process behavior.
 

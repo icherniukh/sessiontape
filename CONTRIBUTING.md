@@ -9,7 +9,7 @@ The recorder uses a platform-neutral core with platform-specific capture backend
 - `src/process_monitor.py` — Rekordbox process detection with debounce logic.
 - `src/backends/base.py` — `CaptureBackend` protocol that all platform backends implement.
 - `src/backends/macos_capture.py` — macOS backend using `mac-capture` (native Swift CoreAudio process tap).
-- `src/backends/windows_capture.py` — Windows backend using `sessiontape-capture-win.exe` (native WASAPI loopback helper).
+- `src/backends/windows_capture.py` — Windows backend using `sessiontape-capture-win.exe` (native WASAPI loopback capture binary).
 
 WAV export is written directly from PCM data. MP3 export shells out to `ffmpeg`.
 

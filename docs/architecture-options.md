@@ -6,7 +6,7 @@ Working document — not committed. For design evaluation before spec.
 
 Current architecture problems:
 - `daemon.py` is a god object: polls every 2s, reaches into `capture.recorder.state`, `capture.recorder.last_active_at`
-- Watchdog is a heuristic timer (5 min) rather than reacting to capture helper death
+- Watchdog is a heuristic timer (5 min) rather than reacting to capture process exit
 - No clean extension points for control surface (API/UI), post-processing, or smart session detection
 - `PCMStreamRecorder` mixes audio analysis with file lifecycle
 - Stale state bugs caused by polling interval gaps (watchdog fired during active recording)
@@ -42,7 +42,7 @@ Events (typed dataclasses): `ProcessStarted(pid)`, `ProcessStopped`, `PcmChunk(d
 
 ## Option 2 — asyncio throughout
 
-Every component is a coroutine. `asyncio.subprocess` for capture helper. `asyncio.Queue` for events. Single-threaded coordination via event loop.
+Every component is a coroutine. `asyncio.subprocess` for the capture process. `asyncio.Queue` for events. Single-threaded coordination via event loop.
 
 ### Evaluation
 

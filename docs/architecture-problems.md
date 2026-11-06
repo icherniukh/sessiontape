@@ -47,7 +47,7 @@ Additionally, polling psutil every 2 seconds works but wastes cycles and adds up
 
 ---
 
-## Problem 4: No Reaction to Capture Helper Death
+## Problem 4: No Reaction to Capture Process Exit
 
 **File:** `src/capture.py:_read_loop()`, `src/daemon.py`
 
@@ -98,7 +98,7 @@ Fine-grained logging shouldn't be on a fixed interval — it should log on state
 
 **Fix:** Update `last_active_at = time.time()` when transitioning ACTIVE→PASSIVE in `PCMStreamRecorder`. This resets the watchdog timer to "silence just started now."
 
-### No restart on capture helper death (0 chunks, non-zero exit)
+### No restart on capture process exit (0 chunks, non-zero exit)
 
 The daemon has no path to restart audiotee when it dies without delivering any audio. Watchdog is the only recovery mechanism and fires after 5 minutes.
 

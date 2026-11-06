@@ -16,3 +16,11 @@ decay_tail = 5
 [monitor]
 process_name = "rekordbox"
 poll_interval = 2.0
+
+# Capture pipeline diagnostics (macOS). Edit config.toml — no env vars needed.
+[capture]
+mac_capture_backend = "auto" # "auto" (CoreAudio tap with SCK fallback), "tap", or "sck"
+perf_metrics = true          # Python read-loop CAPTURE lines (drops, gap_max, proc_max)
+mac_capture_metrics = true   # Swift capture callback CAPTURE lines (cb_max, slow, fb)
+mac_capture_diag = false     # Verbose per-buffer logs from mac-capture
+# mac_capture_log = ""       # Optional file path for mac-capture diagnostic log

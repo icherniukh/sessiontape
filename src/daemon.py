@@ -6,12 +6,22 @@ from typing import Optional
 
 import psutil
 
-from src.capture import AudioCapture
+from src.capture import EXIT_FORMAT_CHANGED, EXIT_FORMAT_MISMATCH, AudioCapture
 from src.config import Config
-from src.events import (CaptureDied, EventQueue, ExportFailed, ExportFinished,
-                        ExportStarted, ProcessReplaced, ProcessStarted,
-                        ProcessStopped, SegmentClosed, SegmentOpened,
-                        ShutdownRequested, TapBroken)
+from src.events import (
+    CaptureDied,
+    EventQueue,
+    ExportFailed,
+    ExportFinished,
+    ExportStarted,
+    ProcessReplaced,
+    ProcessStarted,
+    ProcessStopped,
+    SegmentClosed,
+    SegmentOpened,
+    ShutdownRequested,
+    TapBroken,
+)
 from src.process_monitor import ProcessMonitor
 from src.recorder_core import ExportManager, recover_orphaned_raw_files
 
@@ -27,7 +37,9 @@ def _cleanup_stale_processes() -> None:
     for proc in psutil.process_iter(["pid", "name"]):
         try:
             if proc.info["name"] in _STALE_PROCESS_NAMES and proc.pid not in own_pids:
-                log.warning(f"Killing stale process: {proc.info['name']} PID {proc.pid}")
+                log.warning(
+                    f"Killing stale process: {proc.info['name']} PID {proc.pid}"
+                )
                 proc.kill()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
@@ -49,9 +61,7 @@ class RecorderDaemon:
         )
 
         self._monitor = ProcessMonitor(
-            config.process_name,
-            queue=self._queue,
-            poll_interval=config.poll_interval
+            config.process_name, queue=self._queue, poll_interval=config.poll_interval
         )
 
         # Recover any orphaned files from previous interrupted runs
@@ -78,6 +88,11 @@ class RecorderDaemon:
             decay_tail=self.config.decay_tail,
             export_format=self.config.export_format,
             export_manager=self._export_manager,
+            perf_metrics=self.config.perf_metrics,
+            mac_capture_backend=self.config.mac_capture_backend,
+            mac_capture_metrics=self.config.mac_capture_metrics,
+            mac_capture_diag=self.config.mac_capture_diag,
+            mac_capture_log=self.config.mac_capture_log,
         )
         self._capture.start()
 
@@ -113,7 +128,7 @@ class RecorderDaemon:
         try:
             while True:
                 event = self._queue.get()
-                
+
                 if isinstance(event, ProcessStarted):
                     self._restart_count = 0
                     self._start_capture(event.pid)
@@ -144,7 +159,9 @@ class RecorderDaemon:
 
                 elif isinstance(event, ProcessStopped):
                     if self._current_pid is None:
-                        log.warning("ProcessStopped received but no capture is active; ignoring.")
+                        log.warning(
+                            "ProcessStopped received but no capture is active; ignoring."
+                        )
                     elif event.pid != self._current_pid:
                         log.warning(
                             f"ProcessStopped PID {event.pid} does not match active PID "
@@ -155,16 +172,37 @@ class RecorderDaemon:
                         self._stop_capture()
 
                 elif isinstance(event, CaptureDied):
-                    if self._current_pid:
+                    if self._current_pid and event.exit_code == EXIT_FORMAT_MISMATCH:
+                        tap_rate = getattr(self._capture, "format_mismatch_rate", None)
+                        if isinstance(tap_rate, int):
+                            log.critical(
+                                f"Output device runs at {tap_rate} Hz; set "
+                                f"recording.sample_rate = {tap_rate} in config. "
+                                "Not restarting capture."
+                            )
+                        else:
+                            log.critical(
+                                "Capture tap sample rate differs from "
+                                "recording.sample_rate; set recording.sample_rate "
+                                "to the output device rate in config. "
+                                "Not restarting capture."
+                            )
+                        self._stop_capture(keep_pid=True)
+                    elif self._current_pid:
                         if self._restart_count >= 5:
                             log.critical(
-                                f"Capture helper died (exit code {event.exit_code}) and restart limit "
+                                f"Capture process exited (exit code {event.exit_code}) and restart limit "
                                 f"({self._restart_count}) reached. Giving up."
                             )
                         else:
                             self._restart_count += 1
+                            reason = (
+                                "tap format changed mid-session"
+                                if event.exit_code == EXIT_FORMAT_CHANGED
+                                else f"exit code {event.exit_code}"
+                            )
                             log.warning(
-                                f"Capture helper died (exit code {event.exit_code}). "
+                                f"Capture process exited ({reason}). "
                                 f"Restarting capture (attempt {self._restart_count})."
                             )
                             self._stop_capture(keep_pid=True)
@@ -185,7 +223,7 @@ class RecorderDaemon:
                             )
                             self._stop_capture(keep_pid=True)
                             self._start_capture(self._current_pid)
-                
+
                 elif isinstance(event, ShutdownRequested):
                     log.info("Shutdown requested.")
                     break

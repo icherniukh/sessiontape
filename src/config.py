@@ -4,7 +4,6 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 
-
 APP_DIR = "sessiontape"
 SUPPORTED_EXPORT_FORMATS = {"wav", "mp3"}
 
@@ -46,9 +45,7 @@ def resolve_config_path(explicit_path: str | None = None) -> str:
 class Config:
     sample_rate: int = 48000
     capture_backend: str = "auto"
-    output_dir: str = field(
-        default_factory=default_output_dir
-    )
+    output_dir: str = field(default_factory=default_output_dir)
     silence_threshold_db: float = -50
     min_silence_duration: float = 15
     min_segment_duration: float = 10
@@ -56,6 +53,11 @@ class Config:
     export_format: str = "wav"
     process_name: str = "rekordbox"
     poll_interval: float = 2.0
+    perf_metrics: bool = True
+    mac_capture_backend: str = "auto"
+    mac_capture_metrics: bool = True
+    mac_capture_diag: bool = False
+    mac_capture_log: str = ""
 
     def __post_init__(self) -> None:
         self.validate()
@@ -95,6 +97,7 @@ class Config:
         rec = data.get("recording", {})
         trig = data.get("trigger", {})
         monitor = data.get("monitor", {})
+        capture = data.get("capture", {})
 
         if "sample_rate" in rec:
             cfg.sample_rate = rec["sample_rate"]
@@ -116,6 +119,16 @@ class Config:
             cfg.process_name = monitor["process_name"]
         if "poll_interval" in monitor:
             cfg.poll_interval = monitor["poll_interval"]
+        if "perf_metrics" in capture:
+            cfg.perf_metrics = bool(capture["perf_metrics"])
+        if "mac_capture_backend" in capture:
+            cfg.mac_capture_backend = str(capture["mac_capture_backend"]).strip().lower()
+        if "mac_capture_metrics" in capture:
+            cfg.mac_capture_metrics = bool(capture["mac_capture_metrics"])
+        if "mac_capture_diag" in capture:
+            cfg.mac_capture_diag = bool(capture["mac_capture_diag"])
+        if "mac_capture_log" in capture:
+            cfg.mac_capture_log = os.path.expanduser(capture["mac_capture_log"])
 
         cfg.validate()
         return cfg

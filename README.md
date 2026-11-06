@@ -56,8 +56,8 @@ Start it as a background service at login:
 brew services start sessiontape
 ```
 
-**Permissions (macOS 14+):**
-Open Rekordbox — a system dialog will prompt for **Screen Recording** consent. If missed: **System Settings → Privacy & Security → Screen Recording → enable `sessiontape`**.
+**Permissions:**
+Open Rekordbox — macOS will ask for consent: **audio recording** for the CoreAudio tap backend (the default), **Screen Recording** for the ScreenCaptureKit backend. If missed, enable `sessiontape` under **System Settings → Privacy & Security** (Screen & System Audio Recording).
 
 ### Installation from Source
 
@@ -68,7 +68,7 @@ git clone https://github.com/icherniukh/sessiontape.git
 cd sessiontape
 uv pip install -e .
 ```
-*(Note: For this to work fully, you must also compile the native capture helpers for your platform. See the Development section below).*
+*(Note: For this to work fully, you must also compile the native capture binaries for your platform. See the Development section below).*
 
 ---
 
@@ -91,13 +91,14 @@ If you want to export recordings as MP3 instead of WAV, ensure `ffmpeg` is insta
 ### Requirements
 
 - **Windows:** 10 Build 19041+ (WASAPI loopback), Visual Studio 2019+ (C++ workload)
-- **macOS:** 12+ (Screen Recording permission required), Xcode + Swift toolchain
+- **macOS:** 15+ required (the `mac-capture` deployment target in `mac-capture/Package.swift`; `Synchronization.Atomic` needs it). macOS 26 recommended: the CoreAudio tap then selects Rekordbox by bundle ID and enables process restore. Screen Recording permission is required for the ScreenCaptureKit backend. Building needs Xcode and a Swift toolchain; Swift 6.2+ (Xcode 26) compiles the macOS 26 tap path.
+  - API availability: process taps (`AudioHardwareCreateProcessTap`, `CATapDescription`) are macOS 14.2+. `CATapDescription.bundleIDs` and `isProcessRestoreEnabled` are macOS 26.0+. On macOS 15 the tap targets the Rekordbox PID instead.
 - Python 3.11+
 - `uv` (recommended) or `pip`
 
 ### Building Standalone Executables & Installers
 
-The following scripts handle the entire build process: compiling the native capture helper, bundling the Python daemon using PyInstaller, and (on Windows) creating the WiX MSI installer plus an optional Inno Setup installer when available.
+The following scripts handle the entire build process: compiling the native capture binary, bundling the Python daemon using PyInstaller, and (on Windows) creating the WiX MSI installer plus an optional Inno Setup installer when available.
 
 **Windows**
 ```powershell
@@ -131,8 +132,8 @@ uv run pytest tests/ -v
 | `src/backends/macos_capture.py` | Spawns `mac-capture`, reads PCM from stdout |
 | `src/backends/windows_capture.py` | Spawns `sessiontape-capture-win.exe`, reads PCM from stdout |
 | `src/recorder_core.py` | Silence detection, raw session writing, WAV/MP3 export |
-| `windows-capture/main.cpp` | Native WASAPI process loopback helper (Windows) |
-| `mac-capture/` | Native CoreAudio process tap helper (macOS) |
+| `windows-capture/main.cpp` | Native WASAPI process loopback binary (Windows) |
+| `mac-capture/` | Native CoreAudio process tap binary (macOS) |
 
 ## License
 
