@@ -1,5 +1,7 @@
 # macOS Audio Popping — Root Cause Analysis
 
+> **Status:** The CoreAudio tap backend is implemented (`--backend tap|sck|auto`), but the tap-vs-SCK A/B on Rekordbox hardware has not been run. No result is recorded here; the root cause remains unconfirmed. Tracked in [Issue #33](https://github.com/icherniukh/sessiontape/issues/33).
+
 ## Problem
 
 SessionTape captures Rekordbox's audio output on macOS using ScreenCaptureKit (SCK). When capture

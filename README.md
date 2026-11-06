@@ -56,7 +56,7 @@ Start it as a background service at login:
 brew services start sessiontape
 ```
 
-**Permissions (macOS 14+):**
+**Permissions:**
 Open Rekordbox — a system dialog will prompt for **Screen Recording** consent. If missed: **System Settings → Privacy & Security → Screen Recording → enable `sessiontape`**.
 
 ### Installation from Source
@@ -91,7 +91,8 @@ If you want to export recordings as MP3 instead of WAV, ensure `ffmpeg` is insta
 ### Requirements
 
 - **Windows:** 10 Build 19041+ (WASAPI loopback), Visual Studio 2019+ (C++ workload)
-- **macOS:** 12+ (Screen Recording permission required), Xcode + Swift toolchain
+- **macOS:** 15+ required (the `mac-capture` deployment target in `mac-capture/Package.swift`; `Synchronization.Atomic` needs it). macOS 26 recommended: the CoreAudio tap then selects Rekordbox by bundle ID and enables process restore. Screen Recording permission is required for the ScreenCaptureKit backend. Building needs Xcode and a Swift toolchain; Swift 6.2+ (Xcode 26) compiles the macOS 26 tap path.
+  - API availability: process taps (`AudioHardwareCreateProcessTap`, `CATapDescription`) are macOS 14.2+. `CATapDescription.bundleIDs` and `isProcessRestoreEnabled` are macOS 26.0+. On macOS 15 the tap targets the Rekordbox PID instead.
 - Python 3.11+
 - `uv` (recommended) or `pip`
 
