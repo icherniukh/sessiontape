@@ -124,12 +124,6 @@ final class PCMOutboundQueue: @unchecked Sendable {
         return true
     }
 
-    func enqueue(_ data: Data) {
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            enqueue(bytes: base, byteCount: data.count)
-        }
-    }
 
     /// Blocks until data is available and copies up to `maxBytes` into `destination`.
     /// Returns 0 only after `close()` once every remaining byte has been drained.
@@ -186,13 +180,6 @@ final class StdoutDrain: @unchecked Sendable {
     var bytesWritten: Int { bytesWrittenAtomic.load(ordering: .relaxed) }
     var broken: Bool { brokenAtomic.load(ordering: .relaxed) }
 
-    func writeAll(_ data: Data) {
-        guard !broken, !data.isEmpty else { return }
-        data.withUnsafeBytes { rawBuffer in
-            guard let base = rawBuffer.baseAddress else { return }
-            writeAll(base, byteCount: data.count)
-        }
-    }
 
     func writeAll(_ data: UnsafeRawPointer, byteCount: Int) {
         guard !broken, byteCount > 0 else { return }

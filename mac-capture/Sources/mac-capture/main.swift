@@ -351,8 +351,7 @@ final class FastPCMConverter {
 
         let left = leftData.assumingMemoryBound(to: Float.self)
         let right = rightData.assumingMemoryBound(to: Float.self)
-        let sampleCount = min(frames * 2, scratchCapacity)
-        if frames * 2 > scratchCapacity { truncatedBuffers.wrappingAdd(1, ordering: .relaxed) }
+        let sampleCount = stereoFramesThatFit(frames) * 2
 
         for frame in 0..<(sampleCount / 2) {
             let base = frame * 2
@@ -366,6 +365,13 @@ final class FastPCMConverter {
         )
     }
 
+    /// Frames of stereo output the scratch buffer can hold; counts a truncation when `frames` doesn't fit.
+    private func stereoFramesThatFit(_ frames: Int) -> Int {
+        let fit = min(frames, scratchCapacity / 2)
+        if fit < frames { truncatedBuffers.wrappingAdd(1, ordering: .relaxed) }
+        return fit
+    }
+
     func enqueueFloatInterleavedStereo(
         _ buffer: AudioBuffer,
         frames: Int,
@@ -373,8 +379,7 @@ final class FastPCMConverter {
     ) {
         guard let data = buffer.mData else { return }
         let input = data.assumingMemoryBound(to: Float.self)
-        let sampleCount = min(frames * 2, scratchCapacity)
-        if frames * 2 > scratchCapacity { truncatedBuffers.wrappingAdd(1, ordering: .relaxed) }
+        let sampleCount = stereoFramesThatFit(frames) * 2
 
         for idx in 0..<sampleCount {
             scratchSamples[idx] = clampToInt16(input[idx])
@@ -394,8 +399,7 @@ final class FastPCMConverter {
     ) {
         guard let data = buffer.mData else { return }
         let input = data.assumingMemoryBound(to: Float.self)
-        let frameCount = min(frames, scratchCapacity / 2)
-        if frames > frameCount { truncatedBuffers.wrappingAdd(1, ordering: .relaxed) }
+        let frameCount = stereoFramesThatFit(frames)
 
         for frame in 0..<frameCount {
             let s = clampToInt16(input[frame])
@@ -712,44 +716,13 @@ func main() async {
     setbuf(stdout, nil)
     logInfo("Starting mac-capture for PID \(pid) at \(sampleRate)Hz (backend: \(captureOptions.backend.rawValue))...")
 
-    var capture: AudioCaptureBackend
-    switch captureOptions.backend {
-    case .tap:
-        if #available(macOS 14.2, *) {
-            capture = CoreAudioTapCapture(
-                pid: pid,
-                sampleRate: sampleRate,
-                metricsEnabled: captureOptions.metrics
-            )
-        } else {
-            logInfo("CoreAudio tap requires macOS 14.2+; falling back to ScreenCaptureKit")
-            capture = AppAudioCapture(
-                pid: pid,
-                sampleRate: sampleRate,
-                metricsEnabled: captureOptions.metrics
-            )
-        }
-    case .sck:
-        capture = AppAudioCapture(
-            pid: pid,
-            sampleRate: sampleRate,
-            metricsEnabled: captureOptions.metrics
-        )
-    case .auto:
-        if #available(macOS 14.2, *) {
-            capture = CoreAudioTapCapture(
-                pid: pid,
-                sampleRate: sampleRate,
-                metricsEnabled: captureOptions.metrics
-            )
-        } else {
-            capture = AppAudioCapture(
-                pid: pid,
-                sampleRate: sampleRate,
-                metricsEnabled: captureOptions.metrics
-            )
-        }
+    func makeBackend(_ mode: CaptureBackendMode) -> AudioCaptureBackend {
+        // The deployment target (macOS 15) is above the 14.2 process-tap floor, so no availability check.
+        mode == .sck
+            ? AppAudioCapture(pid: pid, sampleRate: sampleRate, metricsEnabled: captureOptions.metrics)
+            : CoreAudioTapCapture(pid: pid, sampleRate: sampleRate, metricsEnabled: captureOptions.metrics)
     }
+    var capture = makeBackend(captureOptions.backend)
 
     do {
         do {
@@ -765,11 +738,7 @@ func main() async {
                 logError(
                     "CoreAudio tap failed to start: \(captureErrorDescription(error)). Falling back to ScreenCaptureKit..."
                 )
-                let fallback = AppAudioCapture(
-                    pid: pid,
-                    sampleRate: sampleRate,
-                    metricsEnabled: captureOptions.metrics
-                )
+                let fallback = makeBackend(.sck)
                 try await fallback.start()
                 capture = fallback
             } else {

@@ -22,7 +22,6 @@ private final class HALCounters: @unchecked Sendable {
     let ioStopped = Atomic<Int>(0)
 }
 
-@available(macOS 14.2, *)
 final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
     private let pid: pid_t
     private let sampleRate: Int
@@ -120,19 +119,25 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         return kAudioObjectUnknown
     }
 
-    private func queryDeviceUID(_ deviceID: AudioObjectID) -> String? {
-        var uidAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
+    /// Reads a CFString property (device or tap UID) from a HAL object.
+    private func stringProperty(
+        _ object: AudioObjectID, _ selector: AudioObjectPropertySelector
+    ) -> (value: String?, status: OSStatus) {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var uid: CFString = "" as CFString
-        var uidSize = UInt32(MemoryLayout<CFString>.size)
-        let status = withUnsafeMutablePointer(to: &uid) { ptr in
-            AudioObjectGetPropertyData(deviceID, &uidAddress, 0, nil, &uidSize, ptr)
+        var value: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        let status = withUnsafeMutablePointer(to: &value) { ptr in
+            AudioObjectGetPropertyData(object, &address, 0, nil, &size, ptr)
         }
-        guard status == noErr else { return nil }
-        return uid as String
+        return (status == noErr ? value as String : nil, status)
+    }
+
+    private func queryDeviceUID(_ deviceID: AudioObjectID) -> String? {
+        stringProperty(deviceID, kAudioDevicePropertyDeviceUID).value
     }
 
     /// UIDs of the output devices the process currently plays to (informational only: the tap
@@ -356,17 +361,8 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
             }
         }
 
-        var tapUIDAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioTapPropertyUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var tapUID: CFString = "" as CFString
-        var tapUIDSize = UInt32(MemoryLayout<CFString>.size)
-        let uidStatus = withUnsafeMutablePointer(to: &tapUID) { ptr in
-            AudioObjectGetPropertyData(newTapID, &tapUIDAddress, 0, nil, &tapUIDSize, ptr)
-        }
-        guard uidStatus == noErr else {
+        let (tapUIDValue, uidStatus) = stringProperty(newTapID, kAudioTapPropertyUID)
+        guard uidStatus == noErr, let tapUID = tapUIDValue else {
             throw Self.coreAudioError(
                 Int(uidStatus),
                 "AudioObjectGetPropertyData (tap UID) failed: \(osStatusDescription(uidStatus))")
@@ -384,7 +380,7 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
             kAudioAggregateDeviceIsStackedKey: 0 as NSNumber,
             kAudioAggregateDeviceTapListKey: [
                 [
-                    kAudioSubTapUIDKey: tapUID as String,
+                    kAudioSubTapUIDKey: tapUID,
                     kAudioSubTapDriftCompensationKey: 1 as NSNumber,
                 ]
             ],
