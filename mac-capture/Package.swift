@@ -21,5 +21,9 @@ let package = Package(
             name: "mac-capture-benchmark",
             dependencies: []
         ),
+        .testTarget(
+            name: "mac-captureTests",
+            dependencies: ["mac-capture"]
+        ),
     ]
 )
