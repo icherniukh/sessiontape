@@ -146,10 +146,17 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         logInfo("Configuring CoreAudio process tap for bundle: \(bundleID) (PID: \(pid))")
 
         let desc = CATapDescription()
+        var tapsByBundleID = false
+        // bundleIDs/isProcessRestoreEnabled exist only in the macOS 26 SDK (Swift 6.2 / Xcode 26).
+        // Older SDKs build the PID-based path only.
+        #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             desc.bundleIDs = [bundleID]
             desc.isProcessRestoreEnabled = true
-        } else {
+            tapsByBundleID = true
+        }
+        #endif
+        if !tapsByBundleID {
             let procObj = resolveProcessObject()
             guard procObj != kAudioObjectUnknown else {
                 throw NSError(
