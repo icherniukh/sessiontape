@@ -3,6 +3,7 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 import ScreenCaptureKit
+import Synchronization
 
 extension FileHandle: @retroactive TextOutputStream {
     public func write(_ string: String) {
@@ -260,9 +261,13 @@ private struct AudioBufferListView {
 
 final class FastPCMConverter {
     private let sampleRate: Int
-    private let scratchCapacity: Int
-    private let scratchSamples: UnsafeMutablePointer<Int16>
+    // Scratch is reallocated only by `reserve(maxFrames:)`, which must run before the IO proc
+    // starts; the audio thread only reads these two fields.
+    private var scratchCapacity: Int
+    private var scratchSamples: UnsafeMutablePointer<Int16>
     private var diagnosticBuffersLogged = 0
+    /// Callback buffers that did not fit in the scratch and were cut short (lost audio).
+    let truncatedBuffers = Atomic<Int>(0)
 
     init(sampleRate: Int, maxFrames: Int = 16384) {
         self.sampleRate = sampleRate
@@ -272,6 +277,15 @@ final class FastPCMConverter {
 
     deinit {
         scratchSamples.deallocate()
+    }
+
+    /// Grows the scratch to hold `maxFrames` stereo frames. Not RT-safe: call before audio starts.
+    func reserve(maxFrames: Int) {
+        let needed = maxFrames * 2
+        guard needed > scratchCapacity else { return }
+        scratchSamples.deallocate()
+        scratchSamples = .allocate(capacity: needed)
+        scratchCapacity = needed
     }
 
     func convertAndEnqueue(sampleBuffer: CMSampleBuffer, queue: PCMOutboundQueue) -> Bool {
@@ -338,6 +352,7 @@ final class FastPCMConverter {
         let left = leftData.assumingMemoryBound(to: Float.self)
         let right = rightData.assumingMemoryBound(to: Float.self)
         let sampleCount = min(frames * 2, scratchCapacity)
+        if frames * 2 > scratchCapacity { truncatedBuffers.wrappingAdd(1, ordering: .relaxed) }
 
         for frame in 0..<(sampleCount / 2) {
             let base = frame * 2
@@ -359,6 +374,7 @@ final class FastPCMConverter {
         guard let data = buffer.mData else { return }
         let input = data.assumingMemoryBound(to: Float.self)
         let sampleCount = min(frames * 2, scratchCapacity)
+        if frames * 2 > scratchCapacity { truncatedBuffers.wrappingAdd(1, ordering: .relaxed) }
 
         for idx in 0..<sampleCount {
             scratchSamples[idx] = clampToInt16(input[idx])
@@ -379,6 +395,7 @@ final class FastPCMConverter {
         guard let data = buffer.mData else { return }
         let input = data.assumingMemoryBound(to: Float.self)
         let frameCount = min(frames, scratchCapacity / 2)
+        if frames > frameCount { truncatedBuffers.wrappingAdd(1, ordering: .relaxed) }
 
         for frame in 0..<frameCount {
             let s = clampToInt16(input[frame])
