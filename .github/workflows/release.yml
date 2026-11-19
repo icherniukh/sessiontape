@@ -72,6 +72,8 @@ jobs:
           p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
 
       - name: Build Executable
+        env:
+          CODESIGN_IDENTITY: "Developer ID Application"
         run: |
           source .venv/bin/activate
           bash scripts/build.sh --full
@@ -91,6 +93,22 @@ jobs:
           zip -r ../sessiontape-macos-universal.zip *
           cd ..
           shasum -a 256 sessiontape-macos-universal.zip > sessiontape-macos-universal.zip.sha256
+
+      - name: Notarize Release
+        env:
+          NOTARIZATION_KEY_P8: ${{ secrets.NOTARIZATION_KEY_P8 }}
+          NOTARIZATION_KEY_ID: ${{ secrets.NOTARIZATION_KEY_ID }}
+          NOTARIZATION_ISSUER_ID: ${{ secrets.NOTARIZATION_ISSUER_ID }}
+        run: |
+          AUTH_KEY_PATH="$RUNNER_TEMP/AuthKey_${NOTARIZATION_KEY_ID}.p8"
+          printf '%s\n' "$NOTARIZATION_KEY_P8" > "$AUTH_KEY_PATH"
+          trap 'rm -f "$AUTH_KEY_PATH"' EXIT
+
+          xcrun notarytool submit sessiontape-macos-universal.zip \
+            --key "$AUTH_KEY_PATH" \
+            --key-id "$NOTARIZATION_KEY_ID" \
+            --issuer "$NOTARIZATION_ISSUER_ID" \
+            --wait
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2.6.1

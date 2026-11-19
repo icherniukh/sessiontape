@@ -41,6 +41,12 @@ elif [[ ! -f "$MACCAPTURE_BIN" ]]; then
     exit 1
 fi
 
+if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+    echo "Code signing $MACCAPTURE_BIN with $CODESIGN_IDENTITY..."
+    xcrun codesign --force --options runtime --timestamp \
+        --sign "$CODESIGN_IDENTITY" "$MACCAPTURE_BIN"
+fi
+
 echo "Building standalone executable..."
 rm -rf dist/
 uv run pyinstaller sessiontape.spec --clean --noconfirm
