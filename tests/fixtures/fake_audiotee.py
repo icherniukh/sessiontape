@@ -33,8 +33,13 @@ def main() -> int:
     parser.add_argument("--flush", action="store_true")
     args = parser.parse_args()
 
-    scenario = os.environ.get("RB_TEST_AUDIO_SCENARIO", DEFAULT_SCENARIO)
-    sample_rate = int(os.environ.get("RB_TEST_AUDIO_SAMPLE_RATE", str(args.sample_rate)))
+    scenario = os.environ.get("SESSIONTAPE_TEST_AUDIO_SCENARIO") or os.environ.get(
+        "RB_TEST_AUDIO_SCENARIO", DEFAULT_SCENARIO
+    )
+    sample_rate = int(
+        os.environ.get("SESSIONTAPE_TEST_AUDIO_SAMPLE_RATE")
+        or os.environ.get("RB_TEST_AUDIO_SAMPLE_RATE", str(args.sample_rate))
+    )
 
     for chunk in iter_scenario(sample_rate, scenario):
         sys.stdout.buffer.write(chunk)

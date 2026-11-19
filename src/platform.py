@@ -9,6 +9,7 @@ def get_platform_backend(
     backend_name: str | None = None,
     *,
     mac_options: MacCaptureOptions | None = None,
+    capture_diag: bool = False,
 ) -> CaptureBackend:
     selected = (
         (backend_name or os.environ.get("SESSIONTAPE_CAPTURE_BACKEND") or "auto")
@@ -26,7 +27,8 @@ def get_platform_backend(
             raise ValueError(f"Unsupported capture backend {selected!r} on Windows")
         from src.backends.windows_capture import WindowsCaptureBackend
 
-        return WindowsCaptureBackend()
+        diag = capture_diag or (mac_options.diag if mac_options else False)
+        return WindowsCaptureBackend(diag=diag)
     elif sys.platform == "darwin":
         from src.backends.macos_capture import MacCaptureBackend
 

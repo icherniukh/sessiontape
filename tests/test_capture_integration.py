@@ -8,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from src.backends.windows_capture import WindowsCaptureBackend
 from src.capture import AudioCapture
 
 
@@ -75,7 +76,7 @@ def wav_frame_count(path: Path) -> int:
 class TestAudioCaptureIntegration(unittest.TestCase):
     def test_real_subprocess_stream_splits_into_multiple_wavs(self):
         with TemporaryDirectory() as tmpdir:
-            with patch.dict(os.environ, {"RB_TEST_AUDIO_SCENARIO": "sound:3,silence:3,sound:2"}, clear=False):
+            with patch.dict(os.environ, {"SESSIONTAPE_TEST_AUDIO_SCENARIO": "sound:3,silence:3,sound:2"}, clear=False):
                 q = queue.Queue()
                 cap = _make_capture(
                     tmpdir,
@@ -103,7 +104,7 @@ class TestAudioCaptureIntegration(unittest.TestCase):
 
     def test_real_subprocess_stream_preserves_decay_tail(self):
         with TemporaryDirectory() as tmpdir:
-            with patch.dict(os.environ, {"RB_TEST_AUDIO_SCENARIO": "silence:2,sound:1"}, clear=False):
+            with patch.dict(os.environ, {"SESSIONTAPE_TEST_AUDIO_SCENARIO": "silence:2,sound:1"}, clear=False):
                 q = queue.Queue()
                 cap = _make_capture(
                     tmpdir,
@@ -127,6 +128,66 @@ class TestAudioCaptureIntegration(unittest.TestCase):
 
             self.assertEqual(len(wav_paths), 1)
             self.assertEqual(wav_frame_count(wav_paths[0]), 9600)
+
+
+class TestStdinCloseReadLoopExit(unittest.TestCase):
+    def test_stop_via_stdin_close_terminates_read_loop_quickly(self):
+        """Closing stdin must terminate the read loop within ~2s (not the 5s kill fallback)."""
+        import subprocess as _sp
+
+        class ContinuousFakeBackend(WindowsCaptureBackend):
+            def start(self, pid: int, sample_rate: int) -> _sp.Popen:
+                kwargs = {}
+                if sys.platform == "win32":
+                    kwargs["creationflags"] = getattr(_sp, "CREATE_NO_WINDOW", 0x08000000)
+                return _sp.Popen(
+                    [
+                        sys.executable,
+                        FAKE_WINDOWS_CAPTURE,
+                        "--pid",
+                        str(pid),
+                        "--sample-rate",
+                        str(sample_rate),
+                        "--continuous",
+                    ],
+                    stdin=_sp.PIPE,
+                    stdout=_sp.PIPE,
+                    stderr=_sp.DEVNULL,
+                    **kwargs,
+                )
+
+        with TemporaryDirectory() as tmpdir:
+            q = queue.Queue()
+            cap = AudioCapture(
+                pid=12345,
+                output_dir=tmpdir,
+                queue=q,
+                sample_rate=48000,
+                backend=ContinuousFakeBackend(),
+                export_format="wav",
+            )
+            cap.start()
+            try:
+                wait_until(
+                    lambda: cap._proc is not None
+                    and cap._last_read_at > 0
+                    and cap.recorder._chunk_count >= 1,
+                    timeout=3.0,
+                )
+                proc = cap._proc
+
+                t0 = time.time()
+                cap.stop()
+                elapsed = time.time() - t0
+            finally:
+                cap.stop()
+
+            self.assertEqual(proc.returncode, 0)
+            self.assertLess(
+                elapsed,
+                3.0,
+                f"stop() took {elapsed:.1f}s — stdin-close shutdown path appears broken",
+            )
 
 
 if __name__ == "__main__":

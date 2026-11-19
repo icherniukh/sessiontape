@@ -344,6 +344,32 @@ class TestPCMStreamRecorder(unittest.TestCase):
             if recorder._raw_file:
                 recorder._raw_file.close()
 
+    def test_find_executable_falls_back_to_repo_build(self):
+        from unittest.mock import patch
+        from src.recorder_core import _find_executable
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_module = os.path.join(tmpdir, "src", "recorder_core.py")
+            expected = os.path.join(
+                tmpdir, "mac-capture", ".build", "release", "mac-capture"
+            )
+            os.makedirs(os.path.dirname(expected), exist_ok=True)
+            with open(expected, "wb") as f:
+                f.write(b"")
+
+            with (
+                patch("src.recorder_core.__file__", fake_module),
+                patch("src.recorder_core.shutil.which", return_value=None),
+                patch(
+                    "src.recorder_core.os.path.isfile",
+                    side_effect=lambda p: os.path.abspath(p) == os.path.abspath(expected),
+                ),
+            ):
+                self.assertEqual(
+                    os.path.abspath(_find_executable("mac-capture")),
+                    os.path.abspath(expected),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

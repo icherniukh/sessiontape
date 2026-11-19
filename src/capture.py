@@ -19,6 +19,8 @@ capture_log = logging.getLogger("sessiontape.capture")
 
 _FORMAT_MISMATCH_RE = re.compile(r"FORMAT_MISMATCH tap=(\d+)")
 
+# Capture process exit status for unrecoverable configuration errors (e.g. exclusive mode).
+EXIT_CONFIG_ERROR = 2
 # mac-capture exit status for "tap sample rate != requested sample rate".
 EXIT_FORMAT_MISMATCH = 3
 # mac-capture exit status for "tap format changed mid-session". Restartable, unlike 3.
@@ -176,6 +178,8 @@ class AudioCapture:
                 continue
             if decoded.startswith("INFO: "):
                 capture_log.info(decoded[6:])
+            elif decoded.startswith("WARNING: "):
+                capture_log.warning(decoded[9:])
             elif decoded.startswith("ERROR: "):
                 capture_log.error(decoded[7:])
             elif decoded.startswith("DEBUG: "):

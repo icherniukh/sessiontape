@@ -94,18 +94,18 @@ private struct CaptureRuntimeOptions {
 
     mutating func applyEnvironmentFallback() {
         let env = ProcessInfo.processInfo.environment
-        if env["RB_MAC_CAPTURE_DIAG"] == "1" {
+        if (env["SESSIONTAPE_MAC_CAPTURE_DIAG"] ?? env["RB_MAC_CAPTURE_DIAG"]) == "1" {
             diag = true
         }
-        if env["RB_MAC_CAPTURE_METRICS"] == "0" {
+        if (env["SESSIONTAPE_MAC_CAPTURE_METRICS"] ?? env["RB_MAC_CAPTURE_METRICS"]) == "0" {
             metrics = false
         }
-        if let modeStr = env["RB_MAC_CAPTURE_BACKEND"]?.lowercased(),
+        if let modeStr = (env["SESSIONTAPE_MAC_CAPTURE_BACKEND"] ?? env["RB_MAC_CAPTURE_BACKEND"])?.lowercased(),
             let mode = CaptureBackendMode(rawValue: modeStr)
         {
             backend = mode
         }
-        if let path = env["RB_MAC_CAPTURE_LOG"], !path.isEmpty {
+        if let path = env["SESSIONTAPE_MAC_CAPTURE_LOG"] ?? env["RB_MAC_CAPTURE_LOG"], !path.isEmpty {
             logPath = path
         }
     }
@@ -652,7 +652,7 @@ final class AppAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, AudioCa
     ) {
         guard type == .audio, !drainThread.broken else { return }
 
-        let start = DispatchTime.now().uptimeNanoseconds
+        let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         callbackCount += 1
         let dropsBefore = outboundQueue.droppedChunks
 
@@ -672,8 +672,9 @@ final class AppAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, AudioCa
             }
         }
 
-        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000.0
-        metrics.recordCallback(elapsedMs: elapsedMs, usedFallback: !convertedFast)
+        let elapsedNs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) &- start
+        metrics.recordCallback(elapsedNs: elapsedNs, usedFallback: !convertedFast)
+        let elapsedMs = Double(elapsedNs) / 1_000_000.0
         if elapsedMs > 5.0 {
             slowCallbackCount += 1
             if slowCallbackCount <= 10 || slowCallbackCount % 50 == 0 {

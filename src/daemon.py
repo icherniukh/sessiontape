@@ -7,7 +7,12 @@ from typing import Optional
 import psutil
 
 from src.backends.macos_capture import MacCaptureOptions
-from src.capture import EXIT_FORMAT_CHANGED, EXIT_FORMAT_MISMATCH, AudioCapture
+from src.capture import (
+    EXIT_CONFIG_ERROR,
+    EXIT_FORMAT_CHANGED,
+    EXIT_FORMAT_MISMATCH,
+    AudioCapture,
+)
 from src.config import Config
 from src.events import (
     CaptureDied,
@@ -29,7 +34,12 @@ from src.recorder_core import ExportManager, recover_orphaned_raw_files
 
 log = logging.getLogger("sessiontape")
 
-_STALE_PROCESS_NAMES = {"mac-capture", "sessiontape"}
+_STALE_PROCESS_NAMES = {
+    "mac-capture",
+    "sessiontape",
+    "sessiontape-capture-win",
+    "sessiontape-capture-win.exe",
+}
 
 
 def _cleanup_stale_processes() -> None:
@@ -178,7 +188,14 @@ class RecorderDaemon:
                         self._stop_capture()
 
                 elif isinstance(event, CaptureDied):
-                    if self._current_pid and event.exit_code == EXIT_FORMAT_MISMATCH:
+                    if self._current_pid and event.exit_code == EXIT_CONFIG_ERROR:
+                        log.critical(
+                            "Capture process exited with a configuration error "
+                            "(e.g. audio device in exclusive mode). "
+                            "Check the capture log for details. Not restarting capture."
+                        )
+                        self._stop_capture(keep_pid=True)
+                    elif self._current_pid and event.exit_code == EXIT_FORMAT_MISMATCH:
                         tap_rate = getattr(self._capture, "format_mismatch_rate", None)
                         if isinstance(tap_rate, int):
                             log.critical(

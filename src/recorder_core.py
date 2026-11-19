@@ -51,8 +51,18 @@ def _find_executable(name: str) -> str:
         f"/usr/local/bin/{name}",
         f"/usr/bin/{name}",
     ]:
-        if os.path.exists(fallback):
+        if os.path.isfile(fallback):
             return fallback
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for local_build in [
+        os.path.join(repo_root, "mac-capture", ".build", "release", name),
+        os.path.join(repo_root, "mac-capture", ".build", "debug", name),
+        os.path.join(repo_root, "windows-capture", name),
+        os.path.join(repo_root, "windows-capture", f"{name}.exe"),
+    ]:
+        if os.path.isfile(local_build):
+            return local_build
     return name
 
 

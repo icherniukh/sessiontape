@@ -36,7 +36,7 @@ class TestAudioCapture(unittest.TestCase):
         self.assertTrue(320 < rms < 330)
 
     @patch("src.capture.threading.Thread")
-    @patch("src.backends.macos_capture.subprocess.Popen")
+    @patch("subprocess.Popen")
     def test_capture_lifecycle(self, mock_popen, mock_thread):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
@@ -69,19 +69,25 @@ class TestAudioCapture(unittest.TestCase):
             self.assertTrue(cap.is_recording)
             self.assertEqual(cap.recorder.state, "PASSIVE")
 
-            # 3. Stop finalizes recorder and terminates process
+            # 3. Stop finalizes recorder and signals process to exit
             cap.recorder.finalize = MagicMock()
             cap.stop()
             cap.recorder.finalize.assert_called_once()
-            mock_proc.terminate.assert_called_once()
+            if sys.platform == "win32":
+                mock_proc.stdin.close.assert_called_once()
+            else:
+                mock_proc.terminate.assert_called_once()
             self.assertFalse(cap.is_recording)
 
-            # 4. Stop skips terminate if process already exited
+            # 4. Stop skips shutdown signal if process already exited
             mock_proc.reset_mock()
             mock_proc.poll.return_value = 0
             cap.start()
             cap.stop()
-            mock_proc.terminate.assert_not_called()
+            if sys.platform == "win32":
+                mock_proc.stdin.close.assert_not_called()
+            else:
+                mock_proc.terminate.assert_not_called()
 
     @patch("src.capture.threading.Thread")
     @patch("src.backends.macos_capture.subprocess.Popen")
@@ -175,6 +181,7 @@ class TestAudioCapture(unittest.TestCase):
         args, kwargs = mock_popen.call_args
         self.assertEqual(os.path.basename(args[0][0]), "sessiontape-capture-win.exe")
         self.assertEqual(args[0][1:], ["--pid", "12345", "--sample-rate", "48000"])
+        self.assertEqual(kwargs.get("stdin"), subprocess.PIPE)
 
         if sys.platform == "win32":
             expected_flags = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(
@@ -182,9 +189,48 @@ class TestAudioCapture(unittest.TestCase):
             )
             self.assertEqual(kwargs.get("creationflags"), expected_flags)
 
+    @patch("src.backends.windows_capture.subprocess.Popen")
+    def test_windows_backend_passes_debug_flag(self, mock_popen):
+        from src.backends.windows_capture import WindowsCaptureBackend
 
-if __name__ == "__main__":
-    unittest.main()
+        mock_popen.return_value = MagicMock()
+        WindowsCaptureBackend(diag=True).start(12345, 48000)
+
+        args, _ = mock_popen.call_args
+        self.assertEqual(
+            args[0][1:], ["--pid", "12345", "--sample-rate", "48000", "--debug"]
+        )
+
+    @patch("src.backends.windows_capture.subprocess.Popen")
+    def test_windows_backend_stop_closes_stdin(self, mock_popen):
+        from src.backends.windows_capture import WindowsCaptureBackend
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+
+        backend = WindowsCaptureBackend()
+        proc = backend.start(12345, 48000)
+        backend.stop(proc)
+
+        mock_proc.stdin.close.assert_called_once()
+        mock_proc.wait.assert_called_once_with(timeout=5)
+
+    @patch("src.backends.windows_capture.subprocess.Popen")
+    def test_windows_backend_stop_skips_stdin_close_when_already_exited(
+        self, mock_popen
+    ):
+        from src.backends.windows_capture import WindowsCaptureBackend
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        backend = WindowsCaptureBackend()
+        proc = backend.start(12345, 48000)
+        backend.stop(proc)
+
+        mock_proc.stdin.close.assert_not_called()
 
 
 class TestChunkAssembly(unittest.TestCase):
@@ -240,3 +286,19 @@ class TestChunkAssembly(unittest.TestCase):
             cap._proc.stderr = [b"FORMAT_MISMATCH tap=44100 requested=48000\n"]
             cap._log_stderr()
             self.assertEqual(cap.format_mismatch_rate, 44100)
+
+    def test_warning_stderr_line_routes_to_warning_logger(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cap = AudioCapture(
+                pid=1, output_dir=tmpdir, queue=queue.Queue(), backend=StubBackend(None)
+            )
+            cap._proc = MagicMock()
+            cap._proc.stderr = [b"WARNING: device may be in exclusive mode\n"]
+            with self.assertLogs("sessiontape.capture", level="WARNING") as logs:
+                cap._log_stderr()
+            self.assertEqual(len(logs.output), 1)
+            self.assertIn("device may be in exclusive mode", logs.output[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -27,6 +27,13 @@ class TestPlatformBackendSelection(unittest.TestCase):
     def test_windows_accepts_auto(self):
         backend = get_platform_backend("auto")
         self.assertIsInstance(backend, WindowsCaptureBackend)
+        self.assertFalse(backend._diag)
+
+    @patch("src.platform.sys.platform", "win32")
+    def test_windows_passes_diag_option(self):
+        backend = get_platform_backend("auto", mac_options=MacCaptureOptions(diag=True))
+        self.assertIsInstance(backend, WindowsCaptureBackend)
+        self.assertTrue(backend._diag)
 
     @patch("src.platform.sys.platform", "win32")
     def test_invalid_windows_backend_raises(self):

@@ -1,7 +1,5 @@
 import logging
 import subprocess
-import os
-import signal
 import sys
 
 from src.backends.base import CaptureBackend
@@ -11,34 +9,39 @@ log = logging.getLogger("sessiontape")
 
 
 class WindowsCaptureBackend(CaptureBackend):
+    def __init__(self, *, diag: bool = False) -> None:
+        self._diag = diag
+
     def start(self, pid: int, sample_rate: int) -> subprocess.Popen:
         exe = _find_executable("sessiontape-capture-win.exe")
         cmd = [exe, "--pid", str(pid), "--sample-rate", str(sample_rate)]
+        if self._diag:
+            cmd.append("--debug")
         log.info(f"Launching capture executable: {' '.join(cmd)}")
-        
+
         kwargs = {}
         if sys.platform == "win32":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-            
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            )
+
         return subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            **kwargs
+            **kwargs,
         )
 
     def stop(self, proc: subprocess.Popen) -> None:
-        if proc.poll() is None:
-            if sys.platform == "win32":
-                try:
-                    os.kill(proc.pid, signal.CTRL_C_EVENT)
-                except OSError:
-                    proc.terminate()
-            else:
-                proc.terminate()
-                
+        if proc.poll() is None and proc.stdin:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
         try:
-            proc.wait(timeout=10)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()  # SIGKILL must succeed; no timeout
+            proc.wait()

@@ -11,7 +11,7 @@ if (-Not $cl) {
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vswhere) {
         Write-Host "Found vswhere, attempting to setup MSVC environment..."
-        $vsPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
         if ($vsPath) {
             $DevCmd = "$vsPath\Common7\Tools\VsDevCmd.bat"
             if (Test-Path $DevCmd) {
@@ -26,13 +26,26 @@ if (-Not $cl) {
     }
 }
 
+# Direct fallback for VS 2017 BuildTools (only needed if vswhere still found nothing)
+if (-not (Get-Command "cl.exe" -ErrorAction SilentlyContinue)) {
+    $bt2017 = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2017\BuildTools\Common7\Tools\VsDevCmd.bat"
+    if (Test-Path $bt2017) {
+        Write-Host "Falling back to VS 2017 BuildTools directly..."
+        cmd.exe /c "call `"$bt2017`" -arch=x64 && set" | ForEach-Object {
+            if ($_ -match "^(.*?)=(.*)$") {
+                Set-Item -Force -Path "ENV:\$($matches[1])" -Value $matches[2]
+            }
+        }
+    }
+}
+
 $cl = Get-Command "cl.exe" -ErrorAction SilentlyContinue
 if (-Not $cl) {
     Write-Error "Could not find MSVC compiler (cl.exe). Please run this script from a x64 Native Tools Command Prompt for VS."
 }
 
 Write-Host "Compiling sessiontape-capture-win.exe..."
-cl.exe /EHsc /O2 /W3 /MD /std:c++17 main.cpp /link ole32.lib oleaut32.lib mmdevapi.lib /OUT:sessiontape-capture-win.exe
+cl.exe /EHsc /O2 /W3 /MD /std:c++17 main.cpp /link ole32.lib oleaut32.lib mmdevapi.lib uuid.lib /OUT:sessiontape-capture-win.exe
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Build successful."

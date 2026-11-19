@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -49,6 +50,9 @@ def format_capture_line(**fields: int | float) -> str:
         "gap_max",
         "proc_max",
         "bytes",
+        "hal_overload",
+        "io_stopped",
+        "trunc",
     )
     parts = [CAPTURE_PREFIX.strip()]
     for key in order:
@@ -71,6 +75,9 @@ class NativeCaptureWindow:
     fb: int = 0
     cb: int = 0
     bytes: int = 0
+    hal_overload: Optional[int] = None
+    io_stopped: Optional[int] = None
+    trunc: Optional[int] = None
 
 
 class PipelineCaptureMetrics:
@@ -78,6 +85,7 @@ class PipelineCaptureMetrics:
 
     def __init__(self, window_s: float = WINDOW_S) -> None:
         self.window_s = window_s
+        self._lock = threading.Lock()
         self._window_start = 0.0
         self._gap_max = 0.0
         self._proc_max = 0.0
@@ -85,48 +93,80 @@ class PipelineCaptureMetrics:
 
     def reset(self) -> None:
         now = time.monotonic()
-        self._window_start = now
-        self._gap_max = 0.0
-        self._proc_max = 0.0
-        self._native = NativeCaptureWindow()
+        with self._lock:
+            self._window_start = now
+            self._gap_max = 0.0
+            self._proc_max = 0.0
+            self._native = NativeCaptureWindow()
 
     def ingest_native(self, parsed: dict[str, int | float]) -> None:
-        self._native = NativeCaptureWindow(
-            drops=int(parsed.get("drops", 0)),
-            cb_max=float(parsed.get("cb_max", 0.0)),
-            cb_p99=float(parsed.get("cb_p99", 0.0)),
-            slow=int(parsed.get("slow", 0)),
-            fb=int(parsed.get("fb", 0)),
-            cb=int(parsed.get("cb", 0)),
-            bytes=int(parsed.get("bytes", 0)),
-        )
+        with self._lock:
+            prev = self._native
+            self._native = NativeCaptureWindow(
+                drops=prev.drops + int(parsed.get("drops", 0)),
+                cb_max=max(prev.cb_max, float(parsed.get("cb_max", 0.0))),
+                cb_p99=float(parsed.get("cb_p99", prev.cb_p99)),
+                slow=prev.slow + int(parsed.get("slow", 0)),
+                fb=prev.fb + int(parsed.get("fb", 0)),
+                cb=prev.cb + int(parsed.get("cb", 0)),
+                bytes=int(parsed.get("bytes", prev.bytes)),
+                hal_overload=(
+                    (prev.hal_overload or 0) + int(parsed["hal_overload"])
+                    if "hal_overload" in parsed
+                    else prev.hal_overload
+                ),
+                io_stopped=(
+                    (prev.io_stopped or 0) + int(parsed["io_stopped"])
+                    if "io_stopped" in parsed
+                    else prev.io_stopped
+                ),
+                trunc=(
+                    (prev.trunc or 0) + int(parsed["trunc"])
+                    if "trunc" in parsed
+                    else prev.trunc
+                ),
+            )
 
     def record_chunk(self, *, gap_ms: float, process_ms: float) -> None:
-        self._gap_max = max(self._gap_max, gap_ms)
-        self._proc_max = max(self._proc_max, process_ms)
+        with self._lock:
+            self._gap_max = max(self._gap_max, gap_ms)
+            self._proc_max = max(self._proc_max, process_ms)
 
     def maybe_emit(self, *, force: bool = False) -> Optional[str]:
         now = time.monotonic()
-        if not force and now - self._window_start < self.window_s:
-            return None
+        with self._lock:
+            if not force and now - self._window_start < self.window_s:
+                return None
 
-        line = format_capture_line(
-            drops=self._native.drops,
-            cb_max=self._native.cb_max,
-            cb_p99=self._native.cb_p99,
-            slow=self._native.slow,
-            fb=self._native.fb,
-            cb=self._native.cb,
-            gap_max=self._gap_max,
-            proc_max=self._proc_max,
-            bytes=self._native.bytes,
+            native = self._native
+            gap_max = self._gap_max
+            proc_max = self._proc_max
+
+            self._window_start = now
+            self._gap_max = 0.0
+            self._proc_max = 0.0
+            self._native = NativeCaptureWindow()
+
+        extra: dict[str, int] = {}
+        if native.hal_overload is not None:
+            extra["hal_overload"] = native.hal_overload
+        if native.io_stopped is not None:
+            extra["io_stopped"] = native.io_stopped
+        if native.trunc is not None:
+            extra["trunc"] = native.trunc
+
+        return format_capture_line(
+            drops=native.drops,
+            cb_max=native.cb_max,
+            cb_p99=native.cb_p99,
+            slow=native.slow,
+            fb=native.fb,
+            cb=native.cb,
+            gap_max=gap_max,
+            proc_max=proc_max,
+            bytes=native.bytes,
+            **extra,
         )
-
-        self._window_start = now
-        self._gap_max = 0.0
-        self._proc_max = 0.0
-        self._native = NativeCaptureWindow()
-        return line
 
 
 

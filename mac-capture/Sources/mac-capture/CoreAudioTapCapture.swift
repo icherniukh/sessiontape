@@ -417,9 +417,8 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
             aggDevID,
             { (dev, now, inputData, inputTime, outputData, outputTime, clientData) -> OSStatus in
                 guard let clientData = clientData else { return noErr }
-                let tapCapture = Unmanaged<CoreAudioTapCapture>.fromOpaque(clientData)
-                    .takeUnretainedValue()
-                return tapCapture.handleAudioIO(inputData: inputData)
+                return Unmanaged<CoreAudioTapCapture>.fromOpaque(clientData)
+                    ._withUnsafeGuaranteedRef { $0.handleAudioIO(inputData: inputData) }
             },
             Unmanaged.passUnretained(self).toOpaque(),
             &procID
@@ -470,14 +469,14 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
 
     func handleAudioIO(inputData: UnsafePointer<AudioBufferList>) -> OSStatus {
         guard !drainThread.broken else { return noErr }
-        let start = DispatchTime.now().uptimeNanoseconds
+        let start = metricsEnabled ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0
 
         let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
         fastConverter.enqueueTapFloat(
             list, channels: tapChannels, interleaved: tapInterleaved, queue: outboundQueue)
 
         if metricsEnabled {
-            let elapsedNs = DispatchTime.now().uptimeNanoseconds &- start
+            let elapsedNs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) &- start
             metrics.recordCallback(elapsedNs: elapsedNs, usedFallback: false)
         }
         return noErr
