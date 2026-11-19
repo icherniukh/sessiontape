@@ -1,7 +1,7 @@
 The package downloads the official SessionTape Windows MSI from the
 project's GitHub Releases page:
 
-https://github.com/icherniukh/sessiontape/releases/download/v1.2.0/sessiontape.msi
+https://github.com/icherniukh/sessiontape/releases/download/v1.3.0/sessiontape.msi
 
 The SHA256 checksum is recorded in chocolateyInstall.ps1:
 

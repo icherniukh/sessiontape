@@ -99,11 +99,12 @@ jobs:
             sessiontape-macos-universal.zip
             sessiontape-macos-universal.zip.sha256
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
 
       - name: Update Homebrew Tap
         uses: mislav/bump-homebrew-formula-action@v4.1
         with:
-          formula-name: sessiontape
+          formula-name: ${{ (contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta')) && 'sessiontape-preview' || 'sessiontape' }}
           homebrew-tap: icherniukh/homebrew-tap
           base-branch: main
           download-url: https://github.com/icherniukh/sessiontape/releases/download/${{ github.ref_name }}/sessiontape-macos-universal.zip
@@ -176,3 +177,4 @@ jobs:
         uses: softprops/action-gh-release@v2.6.1
         with:
           files: release-assets/*
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}

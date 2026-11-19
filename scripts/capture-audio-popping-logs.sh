@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-OUT_ROOT="${RB_AUDIO_POPPING_LOG_DIR:-/tmp/rb-audio-popping-captures}"
+OUT_ROOT="${SESSIONTAPE_AUDIO_POPPING_LOG_DIR:-${RB_AUDIO_POPPING_LOG_DIR:-/tmp/sessiontape-audio-popping-captures}}"
 TS="$(date '+%Y%m%d-%H%M%S')"
 OUT_DIR="$OUT_ROOT/$TS"
 HELPER="$ROOT_DIR/mac-capture/.build/debug/mac-capture"

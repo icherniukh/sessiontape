@@ -6,8 +6,8 @@ The manifest is meant to be validated locally before copying it into a PR for
 the upstream `microsoft/winget-pkgs` repository:
 
 ```powershell
-winget validate packaging\winget\manifests\s\SessionTape\SessionTape\1.2.0
-winget install --manifest packaging\winget\manifests\s\SessionTape\SessionTape\1.2.0
+winget validate packaging\winget\manifests\s\SessionTape\SessionTape\1.3.0
+winget install --manifest packaging\winget\manifests\s\SessionTape\SessionTape\1.3.0
 winget uninstall SessionTape.SessionTape
 ```
 
