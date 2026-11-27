@@ -371,9 +371,6 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         outboundQueue.configureCapacity(sampleRate: tapRate)
         drainThread.start()
 
-        fputs("TAP_FORMAT rate=\(tapRate) channels=\(tapFormat.mChannelsPerFrame)\n", stderr)
-        fflush(stderr)
-
         // Mid-session format changes (e.g. the output device switched to another sample rate)
         // and coreaudiod restarts (which invalidate all existing HAL object IDs).
         addListener(
@@ -513,6 +510,11 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         let nowNs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         startedUptimeNs = nowNs
         lastCallbackUptimeNs.store(nowNs, ordering: .relaxed)
+
+        // Emit TAP_FORMAT only after AudioDeviceStart returns: macOS TCC can block AudioDeviceStart
+        // while prompting the user for System Audio Recording permission.
+        fputs("TAP_FORMAT rate=\(tapRate) channels=\(tapFormat.mChannelsPerFrame)\n", stderr)
+        fflush(stderr)
 
         logInfo(
             "CoreAudio process tap started successfully (tap ID: \(newTapID), aggregate ID: \(aggDevID))"
