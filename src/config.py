@@ -6,6 +6,15 @@ from pathlib import Path, PureWindowsPath
 
 APP_DIR = "sessiontape"
 SUPPORTED_EXPORT_FORMATS = {"wav", "mp3"}
+SUPPORTED_SAMPLE_RATES = {44100, 48000, 88200, 96000, 176400, 192000}
+SUPPORTED_CAPTURE_BACKENDS = {
+    "auto",
+    "mac-capture",
+    "windows",
+    "sessiontape-capture-win",
+    "sessiontape-capture-win.exe",
+}
+SUPPORTED_MAC_CAPTURE_BACKENDS = {"auto", "tap", "sck"}
 
 
 def default_output_dir() -> str:
@@ -48,7 +57,7 @@ class Config:
     output_dir: str = field(default_factory=default_output_dir)
     silence_threshold_db: float = -50
     min_silence_duration: float = 15
-    min_segment_duration: float = 10
+    min_segment_duration: float = 30
     decay_tail: float = 5
     export_format: str = "wav"
     process_name: str = "rekordbox"
@@ -66,9 +75,17 @@ class Config:
         if (
             not isinstance(self.sample_rate, int)
             or isinstance(self.sample_rate, bool)
-            or self.sample_rate <= 0
+            or self.sample_rate not in SUPPORTED_SAMPLE_RATES
         ):
-            raise ValueError("recording.sample_rate must be a positive integer")
+            rates = ", ".join(str(r) for r in sorted(SUPPORTED_SAMPLE_RATES))
+            raise ValueError(f"recording.sample_rate must be one of: {rates}")
+
+        if not isinstance(self.capture_backend, str):
+            raise ValueError("recording.capture_backend must be a string")
+        self.capture_backend = self.capture_backend.strip().lower()
+        if self.capture_backend not in SUPPORTED_CAPTURE_BACKENDS:
+            supported = ", ".join(sorted(SUPPORTED_CAPTURE_BACKENDS))
+            raise ValueError(f"recording.capture_backend must be one of: {supported}")
 
         if not isinstance(self.export_format, str):
             raise ValueError("recording.export_format must be a string")
@@ -85,8 +102,26 @@ class Config:
             raise ValueError("trigger.min_segment_duration must be non-negative")
         if self.decay_tail < 0:
             raise ValueError("trigger.decay_tail must be non-negative")
+        if not isinstance(self.process_name, str) or not self.process_name.strip():
+            raise ValueError("monitor.process_name must be a non-empty string")
         if self.poll_interval <= 0:
             raise ValueError("monitor.poll_interval must be positive")
+
+        if not isinstance(self.mac_capture_backend, str):
+            raise ValueError("capture.mac_capture_backend must be a string")
+        self.mac_capture_backend = self.mac_capture_backend.strip().lower()
+        if self.mac_capture_backend not in SUPPORTED_MAC_CAPTURE_BACKENDS:
+            supported = ", ".join(sorted(SUPPORTED_MAC_CAPTURE_BACKENDS))
+            raise ValueError(
+                f"capture.mac_capture_backend must be one of: {supported}"
+            )
+
+        for bool_field in ("perf_metrics", "mac_capture_metrics", "mac_capture_diag"):
+            if not isinstance(getattr(self, bool_field), bool):
+                raise ValueError(f"capture.{bool_field} must be a boolean")
+
+        if not isinstance(self.mac_capture_log, str):
+            raise ValueError("capture.mac_capture_log must be a string")
 
     @classmethod
     def from_file(cls, path: str) -> "Config":
@@ -120,14 +155,16 @@ class Config:
         if "poll_interval" in monitor:
             cfg.poll_interval = monitor["poll_interval"]
         if "perf_metrics" in capture:
-            cfg.perf_metrics = bool(capture["perf_metrics"])
+            cfg.perf_metrics = capture["perf_metrics"]
         if "mac_capture_backend" in capture:
-            cfg.mac_capture_backend = str(capture["mac_capture_backend"]).strip().lower()
+            cfg.mac_capture_backend = capture["mac_capture_backend"]
         if "mac_capture_metrics" in capture:
-            cfg.mac_capture_metrics = bool(capture["mac_capture_metrics"])
+            cfg.mac_capture_metrics = capture["mac_capture_metrics"]
         if "mac_capture_diag" in capture:
-            cfg.mac_capture_diag = bool(capture["mac_capture_diag"])
+            cfg.mac_capture_diag = capture["mac_capture_diag"]
         if "mac_capture_log" in capture:
+            if not isinstance(capture["mac_capture_log"], str):
+                raise ValueError("capture.mac_capture_log must be a string")
             cfg.mac_capture_log = os.path.expanduser(capture["mac_capture_log"])
 
         cfg.validate()

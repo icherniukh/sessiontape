@@ -74,18 +74,54 @@ class TestProcessMonitor(unittest.TestCase):
         self.assertEqual(q.qsize(), 0)
 
     @patch("src.process_monitor.ProcessMonitor._find_matching_pids")
-    def test_ignores_brief_disappearance(self, mock_find):
-        # Process starts, then briefly disappears but comes back during stop delay
-        # Poll 1: 12345 (start+confirm). Poll 2: None (gone), re-check: 67890 (back!)
+    def test_ignores_brief_disappearance_same_pid(self, mock_find):
+        # Process starts, then briefly disappears and returns with the same PID during stop delay
+        mock_find.side_effect = [[12345], [12345], [], [12345]]
+        q = queue.Queue()
+        mon = ProcessMonitor("rekordbox", queue=q, poll_interval=0, startup_delay=0, stop_delay=0)
+        mon._poll_once()  # start
+        mon._poll_once()  # brief disappearance — should NOT fire stop or replace
+
+        self.assertEqual(q.qsize(), 1)
+        self.assertIsInstance(q.get(), ProcessStarted)
+        self.assertEqual(mon._current_pid, 12345)
+
+    @patch("src.process_monitor.ProcessMonitor._find_matching_pids")
+    def test_emits_replacement_on_relaunch_during_stop_delay(self, mock_find):
+        # Process disappears and comes back under a new PID within stop_delay: must notify daemon
         mock_find.side_effect = [[12345], [12345], [], [67890]]
         q = queue.Queue()
         mon = ProcessMonitor("rekordbox", queue=q, poll_interval=0, startup_delay=0, stop_delay=0)
         mon._poll_once()  # start
-        mon._poll_once()  # brief disappearance — should NOT fire stop
+        mon._poll_once()  # relaunched under new PID
 
-        self.assertEqual(q.qsize(), 1)
+        self.assertEqual(q.qsize(), 2)
         self.assertIsInstance(q.get(), ProcessStarted)
-        self.assertEqual(mon._current_pid, 67890)  # PID updated
+        event = q.get()
+        self.assertIsInstance(event, ProcessReplaced)
+        self.assertEqual(event.old_pid, 12345)
+        self.assertEqual(event.new_pid, 67890)
+        self.assertEqual(mon._current_pid, 67890)
+
+    @patch("src.process_monitor.psutil.process_iter")
+    def test_find_pid_survives_psutil_system_error(self, mock_process_iter):
+        class BrokenProc:
+            info = None
+            pid = 1
+
+            def as_dict(self, attrs=None):
+                raise SystemError("proc_cmdline returned a result with an exception set")
+
+        class GoodProc:
+            info = None
+            pid = 99
+
+            def as_dict(self, attrs=None):
+                return {"pid": 99, "name": "rekordbox", "create_time": 1.0}
+
+        mock_process_iter.return_value = [BrokenProc(), GoodProc()]
+        mon = ProcessMonitor("rekordbox", queue=queue.Queue())
+        self.assertEqual(mon._find_pid(), 99)
 
     @patch("src.process_monitor.ProcessMonitor._find_matching_pids")
     def test_emits_replacement_when_current_pid_disappears_but_process_remains(self, mock_find):

@@ -28,14 +28,20 @@ def parse_capture_line(line: str) -> Optional[dict[str, int | float]]:
         if "=" not in token:
             continue
         key, _, raw_value = token.partition("=")
-        parsed[key] = _coerce_metric_value(raw_value)
+        coerced = _coerce_metric_value(raw_value)
+        if coerced is not None:
+            parsed[key] = coerced
     return parsed or None
 
 
-def _coerce_metric_value(raw_value: str) -> int | float:
-    if "." in raw_value:
-        return float(raw_value)
-    return int(raw_value)
+def _coerce_metric_value(raw_value: str) -> Optional[int | float]:
+    try:
+        if "." in raw_value:
+            val = float(raw_value)
+            return val if math.isfinite(val) else None
+        return int(raw_value)
+    except ValueError:
+        return None
 
 
 def format_capture_line(**fields: int | float) -> str:

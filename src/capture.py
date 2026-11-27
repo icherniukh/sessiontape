@@ -18,12 +18,16 @@ capture_log = logging.getLogger("sessiontape.capture")
 
 
 _FORMAT_MISMATCH_RE = re.compile(r"FORMAT_MISMATCH tap=(\d+)")
+_TAP_FORMAT_RE = re.compile(r"TAP_FORMAT rate=(\d+)")
+
+# Seconds without PCM bytes on an active continuous tap stream before forcing a restart.
+TAP_STALL_TIMEOUT_S = 10.0
 
 # Capture process exit status for unrecoverable configuration errors (e.g. exclusive mode).
 EXIT_CONFIG_ERROR = 2
-# mac-capture exit status for "tap sample rate != requested sample rate".
+# Legacy mac-capture exit status when tap sample rate != requested sample rate.
 EXIT_FORMAT_MISMATCH = 3
-# mac-capture exit status for "tap format changed mid-session". Restartable, unlike 3.
+# mac-capture exit status for restartable tap/HAL transitions (format change, IO stopped, stall).
 EXIT_FORMAT_CHANGED = 4
 
 
@@ -39,7 +43,7 @@ class AudioCapture:
         source_name: str = "rekordbox",
         silence_threshold_db: float = -50.0,
         min_silence_duration: float = 15.0,
-        min_segment_duration: float = 10.0,
+        min_segment_duration: float = 30.0,
         decay_tail: float = 5.0,
         export_format: str = "wav",
         backend: CaptureBackend | None = None,
@@ -76,6 +80,8 @@ class AudioCapture:
         self._metrics_enabled = perf_metrics
         self._metrics_stop = threading.Event()
         self._last_read_at = 0.0
+        self.active_sample_rate: int = sample_rate
+        self._continuous_stream: bool = False
         # Tap sample rate parsed from a FORMAT_MISMATCH stderr line, if any.
         self.format_mismatch_rate: int | None = None
 
@@ -93,9 +99,26 @@ class AudioCapture:
         if line:
             capture_log.info(line)
 
+    def _check_stream_stall(self) -> None:
+        if not (self.is_recording and self._continuous_stream):
+            return
+        proc = self._proc
+        if not proc or proc.poll() is not None or self._last_read_at <= 0:
+            return
+        idle_s = time.monotonic() - self._last_read_at
+        if idle_s > TAP_STALL_TIMEOUT_S:
+            log.warning(
+                f"Capture stream stalled for {idle_s:.1f}s with no PCM bytes; "
+                "terminating capture process for restart"
+            )
+            self._continuous_stream = False
+            self.backend.stop(proc)
+            self._ensure_proc_stopped(proc)
+
     def _metrics_loop(self) -> None:
         while not self._metrics_stop.wait(1.0):
             self._emit_capture_metric()
+            self._check_stream_stall()
 
     def _ingest_native_metric(self, line: str) -> bool:
         parsed = parse_capture_line(line)
@@ -174,6 +197,18 @@ class AudioCapture:
             m = _FORMAT_MISMATCH_RE.search(decoded)
             if m:
                 self.format_mismatch_rate = int(m.group(1))
+            tap_fmt = _TAP_FORMAT_RE.search(decoded)
+            if tap_fmt:
+                tap_rate = int(tap_fmt.group(1))
+                self._continuous_stream = True
+                if tap_rate != self.active_sample_rate:
+                    log.info(
+                        f"Adopting native tap sample rate {tap_rate} Hz "
+                        f"(configured {self.sample_rate} Hz)"
+                    )
+                    self.active_sample_rate = tap_rate
+                    self.recorder.set_sample_rate(tap_rate)
+                continue
             if self._ingest_native_metric(decoded):  # parse_capture_line strips "INFO: " itself
                 continue
             if decoded.startswith("INFO: "):
@@ -192,6 +227,10 @@ class AudioCapture:
             return
 
         self.is_recording = True
+        self.active_sample_rate = self.sample_rate
+        self._continuous_stream = False
+        self.format_mismatch_rate = None
+        self.recorder.set_sample_rate(self.sample_rate)
         self.recorder.reset()
         self._metrics.reset()
         self._metrics_stop.clear()
@@ -205,13 +244,12 @@ class AudioCapture:
             self._stderr_thread = threading.Thread(target=self._log_stderr, daemon=True)
             self._stderr_thread.start()
 
-        if self._metrics_enabled:
-            self._metrics_thread = threading.Thread(
-                target=self._metrics_loop,
-                name="CaptureMetrics",
-                daemon=True,
-            )
-            self._metrics_thread.start()
+        self._metrics_thread = threading.Thread(
+            target=self._metrics_loop,
+            name="CaptureMetrics",
+            daemon=True,
+        )
+        self._metrics_thread.start()
 
     def _ensure_proc_stopped(self, proc: subprocess.Popen) -> None:
         if proc.poll() is not None:

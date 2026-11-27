@@ -15,6 +15,7 @@ from src.events import (
     ProcessReplaced,
     ProcessStarted,
     ProcessStopped,
+    SegmentOpened,
     ShutdownRequested,
     TapBroken,
 )
@@ -45,7 +46,7 @@ class TestRecorderDaemon(unittest.TestCase):
             backend=mock_get_backend.return_value,
             silence_threshold_db=-50,
             min_silence_duration=15,
-            min_segment_duration=10,
+            min_segment_duration=30,
             decay_tail=5,
             export_format="wav",
             export_manager=daemon._export_manager,
@@ -114,6 +115,114 @@ class TestRecorderDaemon(unittest.TestCase):
         # Verify monitor lifecycle
         MockMonitor.return_value.start.assert_called_once()
         MockMonitor.return_value.stop.assert_called_once()
+
+    @patch("src.daemon.AudioCapture")
+    @patch("src.daemon.ProcessMonitor")
+    @patch("src.daemon.recover_orphaned_raw_files")
+    @patch("src.daemon.signal.signal")
+    @patch("src.daemon._cleanup_stale_processes")
+    def test_rapid_crashes_during_active_audio_still_hit_restart_limit(
+        self, MockCleanup, MockSignal, MockRecover, MockMonitor, MockCapture
+    ):
+        daemon = RecorderDaemon(Config(output_dir="/tmp/test_output"))
+        daemon._queue.put(ProcessStarted(pid=12345))
+        # Rapid crashes inside the 10-minute window must still stop at 5 even if audio opens a segment.
+        for _ in range(7):
+            daemon._queue.put(SegmentOpened(raw_path="/tmp/x.raw", output_path="/tmp/x.wav"))
+            daemon._queue.put(CaptureDied(exit_code=1))
+        daemon._queue.put(ShutdownRequested())
+
+        def side_effect_start(pid):
+            daemon._current_pid = pid
+
+        daemon._start_capture = MagicMock(side_effect=side_effect_start)
+        daemon._stop_capture = MagicMock()
+        daemon.run()
+
+        self.assertEqual(daemon._start_capture.call_count, 1 + 5)
+
+    @patch("src.daemon.time.monotonic")
+    @patch("src.daemon.AudioCapture")
+    @patch("src.daemon.ProcessMonitor")
+    @patch("src.daemon.recover_orphaned_raw_files")
+    @patch("src.daemon.signal.signal")
+    @patch("src.daemon._cleanup_stale_processes")
+    def test_spaced_restarts_outside_window_do_not_exhaust_limit(
+        self, MockCleanup, MockSignal, MockRecover, MockMonitor, MockCapture, mock_monotonic
+    ):
+        # Seven restarts spaced 11 minutes (660s > 600s window) apart across a multi-hour DJ set.
+        clock = [1000.0 + i * 660.0 for i in range(7)]
+        mock_monotonic.side_effect = clock
+
+        daemon = RecorderDaemon(Config(output_dir="/tmp/test_output"))
+        daemon._queue.put(ProcessStarted(pid=12345))
+        for _ in range(7):
+            daemon._queue.put(CaptureDied(exit_code=EXIT_FORMAT_CHANGED))
+        daemon._queue.put(ShutdownRequested())
+
+        def side_effect_start(pid):
+            daemon._current_pid = pid
+
+        daemon._start_capture = MagicMock(side_effect=side_effect_start)
+        daemon._stop_capture = MagicMock()
+        daemon.run()
+
+        self.assertEqual(daemon._start_capture.call_count, 1 + 7)
+
+    @patch("src.daemon.AudioCapture")
+    @patch("src.daemon.ProcessMonitor")
+    @patch("src.daemon.recover_orphaned_raw_files")
+    @patch("src.daemon.signal.signal")
+    @patch("src.daemon._cleanup_stale_processes")
+    def test_tap_restart_limit_holds_without_audio(
+        self, MockCleanup, MockSignal, MockRecover, MockMonitor, MockCapture
+    ):
+        daemon = RecorderDaemon(Config(output_dir="/tmp/test_output"))
+        daemon._queue.put(ProcessStarted(pid=12345))
+        for _ in range(7):
+            daemon._queue.put(TapBroken())
+        daemon._queue.put(ShutdownRequested())
+
+        def side_effect_start(pid):
+            daemon._current_pid = pid
+
+        daemon._start_capture = MagicMock(side_effect=side_effect_start)
+        daemon._stop_capture = MagicMock()
+        daemon.run()
+
+        self.assertEqual(daemon._start_capture.call_count, 1 + 5)
+
+    @patch("src.daemon.AudioCapture")
+    @patch("src.daemon.ProcessMonitor")
+    @patch("src.daemon.recover_orphaned_raw_files")
+    @patch("src.daemon.signal.signal")
+    @patch("src.daemon._cleanup_stale_processes")
+    def test_capture_died_restart_limit_stops_active_capture(
+        self, MockCleanup, MockSignal, MockRecover, MockMonitor, MockCapture
+    ):
+        daemon = RecorderDaemon(Config(output_dir="/tmp/test_output"))
+        daemon._queue.put(ProcessStarted(pid=12345))
+        for _ in range(6):
+            daemon._queue.put(CaptureDied(exit_code=1))
+        daemon._queue.put(ShutdownRequested())
+
+        def side_effect_start(pid):
+            daemon._current_pid = pid
+            daemon._capture = MagicMock()
+
+        def side_effect_stop(keep_pid=False, **kwargs):
+            daemon._capture = None
+            if not keep_pid:
+                daemon._current_pid = None
+
+        daemon._start_capture = MagicMock(side_effect=side_effect_start)
+        daemon._stop_capture = MagicMock(side_effect=side_effect_stop)
+        daemon.run()
+
+        self.assertEqual(daemon._start_capture.call_count, 1 + 5)
+        self.assertIsNone(daemon._capture)
+        # 5 restarts + 1 stop when giving up + 1 finally cleanup
+        self.assertEqual(daemon._stop_capture.call_count, 7)
 
     @patch("src.daemon.AudioCapture")
     @patch("src.daemon.ProcessMonitor")
@@ -215,7 +324,33 @@ class TestFormatMismatch(unittest.TestCase):
         self.assertEqual(daemon._start_capture.call_count, 2)
         daemon._start_capture.assert_called_with(12345)
         self.assertEqual(daemon._restart_count, 1)
-        self.assertTrue(any("tap format changed" in line for line in logs.output))
+        self.assertTrue(any("tap format or HAL state changed" in line for line in logs.output))
+
+    @patch("src.daemon.threading.current_thread")
+    @patch("src.daemon.ProcessMonitor")
+    @patch("src.daemon.recover_orphaned_raw_files")
+    @patch("src.daemon.signal.signal")
+    @patch("src.daemon._cleanup_stale_processes")
+    def test_run_on_background_thread_skips_signal_handlers(
+        self, MockCleanup, MockSignal, MockRecover, MockMonitor, mock_current_thread
+    ):
+        mock_current_thread.return_value = object()
+        daemon = RecorderDaemon(Config(output_dir="/tmp/test_output"))
+        daemon._queue.put(ShutdownRequested())
+        daemon.run()
+        MockSignal.assert_not_called()
+
+    @patch("src.daemon._find_executable", return_value="ffmpeg")
+    @patch("src.daemon.shutil.which", return_value=None)
+    @patch("src.daemon.os.path.isfile", return_value=False)
+    @patch("src.daemon.ProcessMonitor")
+    @patch("src.daemon.recover_orphaned_raw_files")
+    def test_mp3_warns_at_init_when_ffmpeg_missing(
+        self, MockRecover, MockMonitor, mock_isfile, mock_which, mock_find
+    ):
+        with self.assertLogs("sessiontape", level="WARNING") as logs:
+            RecorderDaemon(Config(output_dir="/tmp/test_output", export_format="mp3"))
+        self.assertTrue(any("ffmpeg was not found" in line for line in logs.output))
 
     @patch("src.daemon.AudioCapture")
     @patch("src.daemon.ProcessMonitor")

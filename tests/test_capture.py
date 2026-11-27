@@ -287,6 +287,50 @@ class TestChunkAssembly(unittest.TestCase):
             cap._log_stderr()
             self.assertEqual(cap.format_mismatch_rate, 44100)
 
+    def test_tap_format_line_adopts_native_sample_rate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cap = AudioCapture(
+                pid=1,
+                output_dir=tmpdir,
+                queue=queue.Queue(),
+                sample_rate=48000,
+                backend=StubBackend(None),
+            )
+            cap._proc = MagicMock()
+            cap._proc.stderr = [b"TAP_FORMAT rate=44100 channels=2\n"]
+            cap._log_stderr()
+            self.assertTrue(cap._continuous_stream)
+            self.assertEqual(cap.active_sample_rate, 44100)
+            self.assertEqual(cap.recorder.sample_rate, 44100)
+            self.assertEqual(cap.chunk_size, 17640)
+
+    def test_stall_watchdog_terminates_only_continuous_stalled_stream(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, 0]
+        backend = StubBackend(mock_proc)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cap = AudioCapture(
+                pid=1,
+                output_dir=tmpdir,
+                queue=queue.Queue(),
+                sample_rate=48000,
+                backend=backend,
+            )
+            cap.is_recording = True
+            cap._proc = mock_proc
+            cap._last_read_at = 100.0
+
+            with patch("src.capture.time.monotonic", return_value=125.0):
+                # Non-continuous stream (e.g. SCK / Windows): must not force-stop on idle gaps.
+                cap._continuous_stream = False
+                cap._check_stream_stall()
+                self.assertIsNone(backend.stopped_proc)
+
+                # Continuous CoreAudio tap stalled > 10s: must stop process so read loop exits.
+                cap._continuous_stream = True
+                cap._check_stream_stall()
+                self.assertIs(backend.stopped_proc, mock_proc)
+
     def test_warning_stderr_line_routes_to_warning_logger(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cap = AudioCapture(

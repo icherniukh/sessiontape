@@ -1,7 +1,11 @@
 import logging
 import os
 import queue
+import shutil
 import signal
+import threading
+import time
+from collections import deque
 from typing import Optional
 
 import psutil
@@ -30,9 +34,16 @@ from src.events import (
 )
 from src.platform import get_platform_backend
 from src.process_monitor import ProcessMonitor
-from src.recorder_core import ExportManager, recover_orphaned_raw_files
+from src.recorder_core import (
+    ExportManager,
+    _find_executable,
+    recover_orphaned_raw_files,
+)
 
 log = logging.getLogger("sessiontape")
+
+MAX_CAPTURE_RESTARTS = 5
+RESTART_WINDOW_SECONDS = 600.0
 
 _STALE_PROCESS_NAMES = {
     "mac-capture",
@@ -46,14 +57,15 @@ def _cleanup_stale_processes() -> None:
     """Kill any leftover mac-capture or sessiontape processes from a previous run."""
     current_pid = os.getpid()
     own_pids = {current_pid, os.getppid()}
-    for proc in psutil.process_iter(["pid", "name"]):
+    for proc in psutil.process_iter():
         try:
-            if proc.info["name"] in _STALE_PROCESS_NAMES and proc.pid not in own_pids:
+            info = proc.info if proc.info is not None else proc.as_dict(attrs=["pid", "name"])
+            if info.get("name") in _STALE_PROCESS_NAMES and proc.pid not in own_pids:
                 log.warning(
-                    f"Killing stale process: {proc.info['name']} PID {proc.pid}"
+                    f"Killing stale process: {info['name']} PID {proc.pid}"
                 )
                 proc.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (psutil.Error, OSError, SystemError):
             pass
 
 
@@ -62,8 +74,15 @@ class RecorderDaemon:
         self.config = config
         self._capture: Optional[AudioCapture] = None
         self._current_pid: Optional[int] = None
-        self._restart_count: int = 0
+        self._restart_timestamps: deque[float] = deque()
         self._queue: EventQueue = queue.Queue()
+        if self.config.export_format == "mp3":
+            ffmpeg_exe = _find_executable("ffmpeg")
+            if not (os.path.isfile(ffmpeg_exe) or shutil.which(ffmpeg_exe)):
+                log.warning(
+                    "recording.export_format is 'mp3' but ffmpeg was not found; "
+                    "segment exports will fail until ffmpeg is installed."
+                )
         self._export_manager = ExportManager(
             sample_rate=self.config.sample_rate,
             channels=2,
@@ -83,6 +102,15 @@ class RecorderDaemon:
             export_format=self.config.export_format,
             export_manager=self._export_manager,
         )
+
+    @property
+    def _restart_count(self) -> int:
+        return len(self._restart_timestamps)
+
+    def _prune_restart_window(self, now: float) -> None:
+        cutoff = now - RESTART_WINDOW_SECONDS
+        while self._restart_timestamps and self._restart_timestamps[0] <= cutoff:
+            self._restart_timestamps.popleft()
 
     def _start_capture(self, pid: int):
         log.info(f"Rekordbox detected (PID {pid}). Starting recording.")
@@ -133,8 +161,9 @@ class RecorderDaemon:
                 # queue.Queue() is unbounded (maxsize=0); queue.Full is never raised, but kept as defensive code
                 pass
 
-        signal.signal(signal.SIGTERM, _on_signal)
-        signal.signal(signal.SIGINT, _on_signal)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, _on_signal)
+            signal.signal(signal.SIGINT, _on_signal)
 
         log.info(f"--- sessiontape started · PID {os.getpid()} ---")
 
@@ -146,7 +175,7 @@ class RecorderDaemon:
                 event = self._queue.get()
 
                 if isinstance(event, ProcessStarted):
-                    self._restart_count = 0
+                    self._restart_timestamps.clear()
                     self._start_capture(event.pid)
 
                 elif isinstance(event, ProcessReplaced):
@@ -155,7 +184,7 @@ class RecorderDaemon:
                             "ProcessReplaced received with no active capture; starting fresh on PID %s.",
                             event.new_pid,
                         )
-                        self._restart_count = 0
+                        self._restart_timestamps.clear()
                         self._start_capture(event.new_pid)
                     elif event.old_pid != self._current_pid:
                         log.warning(
@@ -169,7 +198,7 @@ class RecorderDaemon:
                             event.old_pid,
                             event.new_pid,
                         )
-                        self._restart_count = 0
+                        self._restart_timestamps.clear()
                         self._stop_capture()
                         self._start_capture(event.new_pid)
 
@@ -212,21 +241,24 @@ class RecorderDaemon:
                             )
                         self._stop_capture(keep_pid=True)
                     elif self._current_pid:
-                        if self._restart_count >= 5:
+                        now = time.monotonic()
+                        self._prune_restart_window(now)
+                        if len(self._restart_timestamps) >= MAX_CAPTURE_RESTARTS:
                             log.critical(
                                 f"Capture process exited (exit code {event.exit_code}) and restart limit "
-                                f"({self._restart_count}) reached. Giving up."
+                                f"({MAX_CAPTURE_RESTARTS} per {int(RESTART_WINDOW_SECONDS)}s) reached. Giving up."
                             )
+                            self._stop_capture(keep_pid=True)
                         else:
-                            self._restart_count += 1
+                            self._restart_timestamps.append(now)
                             reason = (
-                                "tap format changed mid-session"
+                                "tap format or HAL state changed mid-session"
                                 if event.exit_code == EXIT_FORMAT_CHANGED
                                 else f"exit code {event.exit_code}"
                             )
                             log.warning(
                                 f"Capture process exited ({reason}). "
-                                f"Restarting capture (attempt {self._restart_count})."
+                                f"Restarting capture (attempt {self._restart_count}/{MAX_CAPTURE_RESTARTS})."
                             )
                             self._stop_capture(keep_pid=True)
                             # Rekordbox is likely still running if we haven't received ProcessStopped
@@ -234,15 +266,19 @@ class RecorderDaemon:
 
                 elif isinstance(event, TapBroken):
                     if self._current_pid:
-                        if self._restart_count >= 5:
+                        now = time.monotonic()
+                        self._prune_restart_window(now)
+                        if len(self._restart_timestamps) >= MAX_CAPTURE_RESTARTS:
                             log.critical(
-                                f"Tap broken and restart limit ({self._restart_count}) reached. Giving up."
+                                f"Tap broken and restart limit ({MAX_CAPTURE_RESTARTS} per "
+                                f"{int(RESTART_WINDOW_SECONDS)}s) reached. Giving up."
                             )
+                            self._stop_capture(keep_pid=True)
                         else:
-                            self._restart_count += 1
+                            self._restart_timestamps.append(now)
                             log.warning(
                                 f"Watchdog: Tap broken (all zeros). Restarting capture for fresh tap "
-                                f"(attempt {self._restart_count})."
+                                f"(attempt {self._restart_count}/{MAX_CAPTURE_RESTARTS})."
                             )
                             self._stop_capture(keep_pid=True)
                             self._start_capture(self._current_pid)

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from src.config import Config
 from src.events import ExportFinished, ExportStarted, SegmentClosed, SegmentOpened
-from src.recorder_core import ExportManager, PCMStreamRecorder
+from src.recorder_core import ExportManager, PCMStreamRecorder, recover_orphaned_raw_files
 
 
 def write_sine_raw(path: str, sample_rate: int, seconds: float = 0.5) -> None:
@@ -200,7 +200,9 @@ class TestPCMStreamRecorder(unittest.TestCase):
 
             recorder.finalize()
 
-            export_manager.enqueue.assert_called_once_with(raw_path, output_path)
+            export_manager.enqueue.assert_called_once_with(
+                raw_path, output_path, sample_rate=48000
+            )
             self.assertEqual(recorder.state, "PASSIVE")
 
     def test_finalize_discards_short_segment_below_min_duration(self):
@@ -240,34 +242,47 @@ class TestPCMStreamRecorder(unittest.TestCase):
             self.assertEqual(recorder.state, "PASSIVE")
             mock_callback.assert_not_called()
 
-    def test_on_tap_broken_called_once_at_threshold(self):
+    def test_digital_zero_silence_splits_segment_without_tap_restart(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_callback = MagicMock()
+            export_manager = MagicMock()
+            events = []
             recorder = PCMStreamRecorder(
                 output_dir=tmpdir,
                 on_tap_broken=mock_callback,
                 sample_rate=48000,
                 silence_threshold_db=-50,
+                min_silence_duration=1.5,
+                min_segment_duration=0.0,
                 decay_tail=0,
+                export_manager=export_manager,
+                event_sink=events.append,
             )
 
-            # Transition to ACTIVE with one loud chunk
             loud_chunk = b"\xff\x7f" * (recorder.chunk_size // 2)
-            recorder.process_chunk(loud_chunk)
+            zero_chunk = b"\x00" * recorder.chunk_size
+
+            # Play -> digital-zero pause (>= 1.5s = 15 chunks) -> play again -> finalize
+            for _ in range(5):
+                recorder.process_chunk(loud_chunk)
             self.assertEqual(recorder.state, "ACTIVE")
 
-            # Feed 900 all-zero chunks — exactly at the threshold
-            zero_chunk = b"\x00" * recorder.chunk_size
             for _ in range(900):
                 recorder.process_chunk(zero_chunk)
+            self.assertEqual(recorder.state, "PASSIVE")
+            mock_callback.assert_not_called()
+            self.assertEqual(export_manager.enqueue.call_count, 1)
 
-            mock_callback.assert_called_once()
+            for _ in range(5):
+                recorder.process_chunk(loud_chunk)
+            self.assertEqual(recorder.state, "ACTIVE")
+            recorder.finalize()
 
-            # Feed another zero chunk — callback must NOT fire again (deduplication)
-            recorder.process_chunk(zero_chunk)
-            mock_callback.assert_called_once()
-
-            recorder._raw_file.close() if recorder._raw_file else None
+            self.assertEqual(export_manager.enqueue.call_count, 2)
+            self.assertEqual(
+                [type(e) for e in events],
+                [SegmentOpened, SegmentClosed, SegmentOpened, SegmentClosed],
+            )
 
     def test_emits_segment_lifecycle_events(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -312,6 +327,74 @@ class TestPCMStreamRecorder(unittest.TestCase):
             self.assertFalse(os.path.exists(raw_path))
             self.assertIsInstance(events[0], ExportStarted)
             self.assertIsInstance(events[1], ExportFinished)
+
+    def test_per_job_sample_rate_exports_mixed_rate_segments(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_48k = os.path.join(tmpdir, "seg1.raw")
+            out_48k = os.path.join(tmpdir, "seg1.wav")
+            raw_44k = os.path.join(tmpdir, "seg2.raw")
+            out_44k = os.path.join(tmpdir, "seg2.wav")
+            write_sine_raw(raw_48k, sample_rate=48000, seconds=0.1)
+            write_sine_raw(raw_44k, sample_rate=44100, seconds=0.1)
+
+            manager = ExportManager(
+                sample_rate=48000,
+                channels=2,
+                bytes_per_sample=2,
+                export_format="wav",
+            )
+            manager.enqueue(raw_48k, out_48k, sample_rate=48000)
+            manager.enqueue(raw_44k, out_44k, sample_rate=44100)
+            manager.shutdown()
+
+            with wave.open(out_48k, "rb") as w48, wave.open(out_44k, "rb") as w44:
+                self.assertEqual(w48.getframerate(), 48000)
+                self.assertEqual(w44.getframerate(), 44100)
+
+    @patch("src.recorder_core.subprocess.run")
+    @patch("src.recorder_core._find_executable", return_value="ffmpeg")
+    def test_mp3_export_caps_output_rate_above_48khz(self, mock_find, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        manager = ExportManager(
+            sample_rate=48000,
+            channels=2,
+            bytes_per_sample=2,
+            export_format="mp3",
+        )
+        manager._convert_mp3("in.raw", "out.mp3", sample_rate=96000)
+        cmd = mock_run.call_args[0][0]
+        input_idx = cmd.index("-i")
+        self.assertEqual(cmd[cmd.index("-ar") + 1], "96000")
+        self.assertLess(cmd.index("-ar"), input_idx)
+        # Second -ar after -i caps libmp3lame output to 48000 Hz.
+        tail = cmd[input_idx + 2 :]
+        self.assertIn("-ar", tail)
+        self.assertEqual(tail[tail.index("-ar") + 1], "48000")
+        self.assertEqual(cmd[-1], "out.mp3")
+
+    def test_recover_orphaned_raw_files_uses_encoded_rate_and_strips_suffix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_44k = os.path.join(tmpdir, ".rb_session_20261127_010000_000001_44100hz.raw")
+            raw_legacy = os.path.join(tmpdir, ".rb_session_20261127_010005_000002.raw")
+            write_sine_raw(raw_44k, sample_rate=44100, seconds=0.1)
+            write_sine_raw(raw_legacy, sample_rate=48000, seconds=0.1)
+            old_mtime = 1_700_000_000
+            os.utime(raw_44k, (old_mtime, old_mtime))
+            os.utime(raw_legacy, (old_mtime, old_mtime))
+
+            recover_orphaned_raw_files(
+                output_dir=tmpdir,
+                sample_rate=48000,
+                export_format="wav",
+            )
+
+            out_44k = os.path.join(tmpdir, "rb_session_20261127_010000_000001.wav")
+            out_legacy = os.path.join(tmpdir, "rb_session_20261127_010005_000002.wav")
+            self.assertTrue(os.path.exists(out_44k))
+            self.assertTrue(os.path.exists(out_legacy))
+            with wave.open(out_44k, "rb") as w44, wave.open(out_legacy, "rb") as w48:
+                self.assertEqual(w44.getframerate(), 44100)
+                self.assertEqual(w48.getframerate(), 48000)
 
     def test_last_active_at_updates_on_non_silent_chunk(self):
         from unittest.mock import patch
@@ -363,6 +446,30 @@ class TestPCMStreamRecorder(unittest.TestCase):
                 patch(
                     "src.recorder_core.os.path.isfile",
                     side_effect=lambda p: os.path.abspath(p) == os.path.abspath(expected),
+                ),
+            ):
+                self.assertEqual(
+                    os.path.abspath(_find_executable("mac-capture")),
+                    os.path.abspath(expected),
+                )
+
+    def test_find_executable_prefers_repo_build_over_stale_path_binary(self):
+        from src.recorder_core import _find_executable
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_module = os.path.join(tmpdir, "src", "recorder_core.py")
+            expected = os.path.join(
+                tmpdir, "mac-capture", ".build", "release", "mac-capture"
+            )
+            os.makedirs(os.path.dirname(expected), exist_ok=True)
+            with open(expected, "wb") as f:
+                f.write(b"")
+
+            with (
+                patch("src.recorder_core.__file__", fake_module),
+                patch(
+                    "src.recorder_core.shutil.which",
+                    return_value="/opt/homebrew/bin/mac-capture",
                 ),
             ):
                 self.assertEqual(
