@@ -59,7 +59,8 @@ def _cleanup_stale_processes() -> None:
     own_pids = {current_pid, os.getppid()}
     for proc in psutil.process_iter():
         try:
-            info = proc.info if proc.info is not None else proc.as_dict(attrs=["pid", "name"])
+            cached_info = getattr(proc, "info", None)
+            info = cached_info if cached_info is not None else proc.as_dict(attrs=["pid", "name"])
             if info.get("name") in _STALE_PROCESS_NAMES and proc.pid not in own_pids:
                 log.warning(
                     f"Killing stale process: {info['name']} PID {proc.pid}"

@@ -147,6 +147,17 @@ class TestProcessMonitor(unittest.TestCase):
         mon.stop()
         self.assertTrue(mon._stop_event.is_set())
 
+    def test_real_psutil_process_iter_without_cached_info(self):
+        import os
+        import psutil
+        from src.daemon import _cleanup_stale_processes
+
+        current_name = psutil.Process(os.getpid()).name()
+        mon = ProcessMonitor(process_name=current_name, queue=queue.Queue())
+        pids = mon._find_matching_pids()
+        self.assertIn(os.getpid(), pids)
+        _cleanup_stale_processes()
+
 
 if __name__ == "__main__":
     unittest.main()

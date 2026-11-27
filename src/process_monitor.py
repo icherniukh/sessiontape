@@ -28,9 +28,10 @@ class ProcessMonitor(threading.Thread):
         matches: list[tuple[float, int]] = []
         for proc in psutil.process_iter():
             try:
+                cached_info = getattr(proc, "info", None)
                 info = (
-                    proc.info
-                    if proc.info is not None
+                    cached_info
+                    if cached_info is not None
                     else proc.as_dict(attrs=["pid", "name", "create_time"])
                 )
                 name = info.get("name")
