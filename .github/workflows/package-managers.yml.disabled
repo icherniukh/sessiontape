@@ -106,7 +106,7 @@ jobs:
             Write-Warning "winget is not available on this runner; metadata consistency is covered by validate-package-metadata."
             return
           }
-          $manifest = "packaging\winget\manifests\s\SessionTape\SessionTape\1.3.0"
+          $manifest = "packaging\winget\manifests\s\SessionTape\SessionTape\1.4.0"
           winget validate --manifest $manifest
 
   package-chocolatey:
@@ -131,7 +131,7 @@ jobs:
           if (-not $pkg) {
             throw "Chocolatey package was not created"
           }
-          choco info sessiontape --source artifacts --version 1.3.0 --exact
+          choco info sessiontape --source artifacts --version 1.4.0 --exact
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v5

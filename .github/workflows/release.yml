@@ -81,6 +81,7 @@ jobs:
       - name: Code Sign Binary
         run: |
           xcrun codesign --force --options runtime --timestamp \
+            --identifier dev.icherniukh.sessiontape \
             --entitlements entitlements.plist \
             --sign "Developer ID Application" dist/sessiontape
 

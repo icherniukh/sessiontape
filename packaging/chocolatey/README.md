@@ -7,7 +7,7 @@ Build and test from Windows:
 
 ```powershell
 choco pack packaging\chocolatey\sessiontape\sessiontape.nuspec
-choco install sessiontape --source . --version 1.3.0 -y
+choco install sessiontape --source . --version 1.4.0 -y
 choco uninstall sessiontape -y
 ```
 

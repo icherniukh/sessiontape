@@ -44,9 +44,9 @@ if ($iscc) {
 $wixCmd = Get-Command wix -ErrorAction SilentlyContinue
 if ($wixCmd) {
     $version = (git describe --tags --abbrev=0 2>$null) -replace '^v', ''
-    if (-not $version) { $version = "1.3.0" } # WiX requires a strict version format like x.y.z
+    if (-not $version) { $version = "1.4.0" } # WiX requires a strict version format like x.y.z
     if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
-        $version = "1.3.0" # Fallback if tag is not a valid MSI version
+        $version = "1.4.0" # Fallback if tag is not a valid MSI version
     }
     Write-Host "Building WiX installer (version $version)..."
     & wix build "$ScriptDir\installer.wxs" -acceptEula wix7 -d AppVersion=$version -b "$ProjectRoot" -o "$ProjectRoot\dist\sessiontape.msi"
