@@ -4,16 +4,14 @@ import CoreAudio
 import Foundation
 import Synchronization
 
-/// Thrown by `CoreAudioTapCapture.start()` (after teardown) when the tap's sample rate differs
-/// from the requested rate. main.swift maps it to `FORMAT_MISMATCH ...` on stderr + exit status 3.
-struct TapFormatMismatch: Error {
-    let tapRate: Int
-    let requestedRate: Int
-}
-
-/// Exit status used when the tap format changes mid-session (`FORMAT_CHANGED ...` on stderr).
-/// The reader treats it as restartable, unlike the startup mismatch status 3.
+/// Exit status used when the tap format changes mid-session, the HAL reports abnormal IO stop,
+/// `coreaudiod` restarts, or the tap callback stalls. The Python supervisor restarts capture.
 let tapFormatChangedExitStatus: Int32 = 4
+
+/// Awake-uptime threshold without an IO callback before `checkHealth()` exits for a restart.
+let tapStallTimeoutNs: UInt64 = 5_000_000_000
+/// Awake-uptime threshold of exact-zero samples after start before logging a TCC permission hint.
+private let silentStartupWarningNs: UInt64 = 60_000_000_000
 
 /// Counters bumped by HAL listener blocks. Lock-free: the overload listener is invoked
 /// synchronously from the IO thread.
@@ -43,7 +41,10 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
     private let teardownLock = NSLock()
     private var didTeardown = false
     private let stopping = Atomic<Bool>(false)
-    private let formatChangeFired = Atomic<Bool>(false)
+    private let restartExitFired = Atomic<Bool>(false)
+    private let lastCallbackUptimeNs = Atomic<UInt64>(0)
+    private var startedUptimeNs: UInt64 = 0
+    private var silentWarningLogged = false
     private let counters = HALCounters()
 
     /// Queue for IO-thread notifications. The HAL dispatches `kAudioDeviceProcessorOverload`
@@ -236,7 +237,7 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
             logDebug("Tap format notification with unchanged format; ignoring")
             return
         }
-        guard !formatChangeFired.exchange(true, ordering: .sequentiallyConsistent) else { return }
+        guard !restartExitFired.exchange(true, ordering: .sequentiallyConsistent) else { return }
 
         // Contract with the reader: exact line on stderr, exit status 4 (restartable).
         fputs(
@@ -254,11 +255,10 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
     // MARK: - Start
 
     func start() async throws {
-        drainThread.start()
         do {
             try startTap()
         } catch {
-            // Every failure (including the exit-3 format mismatch) leaves nothing behind.
+            // Every failure leaves nothing behind.
             teardown()
             throw error
         }
@@ -302,11 +302,30 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         // deviceUID stays unset on purpose: per CATapDescription.h it is set only when a tap
         // "only taps a specific hardware device". Unset, the tap mixes the process output
         // regardless of which device the process plays to, so it follows a device switch.
+        // Optional A/B overrides via environment:
+        //   SESSIONTAPE_TAP_PIN=1             pin tap to process's current output device
+        //   SESSIONTAPE_TAP_DRIFT=0|1         sub-tap drift compensation (default 0: single source clock)
+        //   SESSIONTAPE_TAP_CLOCK=0|clockdev|subdev  aggregate clock layout (default 0: tap-driven)
+        //   SESSIONTAPE_TAP_BUFFER_FRAMES=N   aggregate IO buffer frames (default 4096; 0 keeps HAL default)
+        let experimentEnv = ProcessInfo.processInfo.environment
+        let clockMode: String = {
+            guard let raw = experimentEnv["SESSIONTAPE_TAP_CLOCK"], !raw.isEmpty, raw != "0" else {
+                return "0"
+            }
+            return raw == "1" ? "clockdev" : raw
+        }()
+        var primaryOutputUID: String?
         if processObj != kAudioObjectUnknown {
             let uids = processOutputDeviceUIDs(processObj)
-            logInfo(
-                "CoreAudio tap is not pinned to a device; process output devices now: \(uids.isEmpty ? "none" : uids.joined(separator: ", "))"
-            )
+            primaryOutputUID = uids.first
+            if experimentEnv["SESSIONTAPE_TAP_PIN"] == "1", let first = uids.first {
+                desc.deviceUID = first
+                logInfo("CoreAudio tap pinned to device \(first)")
+            } else {
+                logInfo(
+                    "CoreAudio tap is not pinned to a device; process output devices now: \(uids.isEmpty ? "none" : uids.joined(separator: ", "))"
+                )
+            }
         }
 
         var newTapID: AudioObjectID = kAudioObjectUnknown
@@ -326,8 +345,8 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         )
 
         let tapRate = Int(tapFormat.mSampleRate.rounded())
-        if tapRate != sampleRate {
-            throw TapFormatMismatch(tapRate: tapRate, requestedRate: sampleRate)
+        guard tapRate >= 8_000 && tapRate <= 384_000 else {
+            throw Self.coreAudioError(2, "Invalid tap sample rate: \(tapRate) Hz")
         }
         let isFloat32PCM =
             tapFormat.mFormatID == kAudioFormatLinearPCM
@@ -340,11 +359,31 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
                 "Unsupported tap format: formatID=\(tapFormat.mFormatID) flags=0x\(String(tapFormat.mFormatFlags, radix: 16)) bits=\(tapFormat.mBitsPerChannel) channels=\(tapFormat.mChannelsPerFrame) (need Float32 PCM, 1 or 2 channels)"
             )
         }
+        if tapRate != sampleRate {
+            logInfo(
+                "Tap sample rate (\(tapRate)Hz) differs from requested \(sampleRate)Hz; adopting native tap rate \(tapRate)Hz"
+            )
+        }
         validatedFormat = tapFormat
         tapChannels = Int(tapFormat.mChannelsPerFrame)
         tapInterleaved = (tapFormat.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
 
-        // Mid-session format changes (e.g. the output device switched to another sample rate).
+        outboundQueue.configureCapacity(sampleRate: tapRate)
+        drainThread.start()
+
+        fputs("TAP_FORMAT rate=\(tapRate) channels=\(tapFormat.mChannelsPerFrame)\n", stderr)
+        fflush(stderr)
+
+        // Mid-session format changes (e.g. the output device switched to another sample rate)
+        // and coreaudiod restarts (which invalidate all existing HAL object IDs).
+        addListener(
+            AudioObjectID(kAudioObjectSystemObject),
+            selector: kAudioHardwarePropertyServiceRestarted,
+            queue: controlQueue,
+            name: "audio service restarted"
+        ) { [weak self] _, _ in
+            self?.handleAudioServiceRestarted()
+        }
         let tapForListener = newTapID
         addListener(
             newTapID, selector: kAudioTapPropertyFormat, queue: controlQueue, name: "tap format"
@@ -372,8 +411,20 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         // tap. Private: invisible to other processes. kAudioAggregateDeviceTapAutoStartKey is
         // deliberately not set: it makes AudioDeviceStart wait for the first tapped audio, but the
         // reader needs a continuous (silent) stream to detect the DJ stopping.
+        // Default drift compensation is off (0): this private aggregate has no hardware input or
+        // output sub-devices of its own, so there is no second crystal clock to resample against,
+        // and enabling `[ahal_dsp]` drift resampling adds ~35-40% steady-state coreaudiod CPU.
+        let driftEnabled = experimentEnv["SESSIONTAPE_TAP_DRIFT"] == "1" ? 1 : 0
+        let defaultBufferFrames = 4096
+        let requestedBufferFrames: Int = {
+            if let raw = experimentEnv["SESSIONTAPE_TAP_BUFFER_FRAMES"], let parsed = Int(raw) {
+                return max(0, parsed)
+            }
+            return defaultBufferFrames
+        }()
+
         let aggUID = UUID().uuidString
-        let aggDesc: [String: Any] = [
+        var aggDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "sessiontape-tap-\(aggUID)",
             kAudioAggregateDeviceUIDKey: aggUID,
             kAudioAggregateDeviceIsPrivateKey: 1 as NSNumber,
@@ -381,10 +432,26 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
             kAudioAggregateDeviceTapListKey: [
                 [
                     kAudioSubTapUIDKey: tapUID,
-                    kAudioSubTapDriftCompensationKey: 1 as NSNumber,
+                    kAudioSubTapDriftCompensationKey: driftEnabled as NSNumber,
                 ]
             ],
         ]
+        if let clockUID = primaryOutputUID {
+            switch clockMode {
+            case "clockdev":
+                aggDesc[kAudioAggregateDeviceClockDeviceKey] = clockUID
+                logInfo("Aggregate clock device set to \(clockUID) (zero output streams)")
+            case "subdev":
+                aggDesc[kAudioAggregateDeviceMainSubDeviceKey] = clockUID
+                aggDesc[kAudioAggregateDeviceSubDeviceListKey] = [[kAudioSubDeviceUIDKey: clockUID]]
+                logInfo("Aggregate clocked by main sub-device \(clockUID)")
+            default:
+                break
+            }
+        }
+        logInfo(
+            "Tap config: pin=\(experimentEnv["SESSIONTAPE_TAP_PIN"] ?? "0") drift=\(driftEnabled) clock=\(clockMode) req_buf=\(requestedBufferFrames)"
+        )
         var aggDevID: AudioObjectID = 0
         let aggStatus = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &aggDevID)
         guard aggStatus == noErr else {
@@ -394,7 +461,13 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         }
         self.aggregateDeviceID = aggDevID
 
-        reserveScratch(for: aggDevID)
+        let maxFrames = queryMaxBufferFrames(for: aggDevID)
+        if requestedBufferFrames > 0 {
+            configureAggregateBufferSize(
+                for: aggDevID, requestedFrames: requestedBufferFrames, maxRangeFrames: maxFrames)
+        }
+        reserveScratch(maxRangeFrames: maxFrames)
+        logBufferFrameSizes(aggregate: aggDevID, process: processObj)
 
         // Overload is dispatched synchronously from the IO thread: atomic increment only.
         let halCounters = counters
@@ -407,9 +480,9 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         addListener(
             aggDevID, selector: kAudioDevicePropertyIOStoppedAbnormally, queue: controlQueue,
             name: "IO stopped abnormally"
-        ) { _, _ in
+        ) { [weak self] _, _ in
             halCounters.ioStopped.wrappingAdd(1, ordering: .relaxed)
-            logError("HAL reported IO stopped abnormally on the capture aggregate device")
+            self?.handleIOStoppedAbnormally()
         }
 
         var procID: AudioDeviceIOProcID?
@@ -437,16 +510,113 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
                 "AudioDeviceStart failed: \(osStatusDescription(startStatus))")
         }
 
+        let nowNs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        startedUptimeNs = nowNs
+        lastCallbackUptimeNs.store(nowNs, ordering: .relaxed)
+
         logInfo(
             "CoreAudio process tap started successfully (tap ID: \(newTapID), aggregate ID: \(aggDevID))"
         )
     }
 
-    /// Sizes the converter scratch from the aggregate's largest IO buffer so the IO proc never
-    /// has to truncate. Runs before AudioDeviceStart (allocation is not allowed on the IO thread).
-    private func reserveScratch(for device: AudioObjectID) {
-        let floorFrames = 16384
-        let ceilingFrames = 1 << 20
+    private func bufferFrameSize(_ device: AudioObjectID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSize,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var frames: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(device, &address, 0, nil, &size, &frames) == noErr
+            ? frames : nil
+    }
+
+    /// Logs the IO buffer size of the aggregate and of each device the target process plays to.
+    private func logBufferFrameSizes(aggregate: AudioObjectID, process: AudioObjectID) {
+        var parts = ["aggregate=\(bufferFrameSize(aggregate).map(String.init) ?? "?")"]
+        if process != kAudioObjectUnknown {
+            var devAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioProcessPropertyDevices,
+                mScope: kAudioObjectPropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var devSize: UInt32 = 0
+            if AudioObjectGetPropertyDataSize(process, &devAddress, 0, nil, &devSize) == noErr,
+                devSize > 0
+            {
+                var devices = [AudioObjectID](
+                    repeating: 0, count: Int(devSize) / MemoryLayout<AudioObjectID>.size)
+                if AudioObjectGetPropertyData(process, &devAddress, 0, nil, &devSize, &devices)
+                    == noErr
+                {
+                    for dev in devices {
+                        let uid = queryDeviceUID(dev) ?? "device#\(dev)"
+                        parts.append("\(uid)=\(bufferFrameSize(dev).map(String.init) ?? "?")")
+                    }
+                }
+            }
+        }
+        logInfo("IO buffer frame sizes: \(parts.joined(separator: " "))")
+    }
+
+    private func handleIOStoppedAbnormally() {
+        guard !stopping.load(ordering: .relaxed) else { return }
+        logError("HAL reported IO stopped abnormally on the capture aggregate device; exiting for restart")
+        guard !restartExitFired.exchange(true, ordering: .sequentiallyConsistent) else { return }
+        fputs("IO_STOPPED_ABNORMALLY\n", stderr)
+        DispatchQueue.global().async { [self] in
+            teardown()
+            exit(tapFormatChangedExitStatus)
+        }
+    }
+
+    private func handleAudioServiceRestarted() {
+        guard !stopping.load(ordering: .relaxed) else { return }
+        logError("coreaudiod restarted; HAL tap and aggregate handles are stale; exiting for restart")
+        guard !restartExitFired.exchange(true, ordering: .sequentiallyConsistent) else { return }
+        fputs("AUDIO_SERVICE_RESTARTED\n", stderr)
+        DispatchQueue.global().async { [self] in
+            teardown()
+            exit(tapFormatChangedExitStatus)
+        }
+    }
+
+    static func isCallbackStalled(lastCallbackNs: UInt64, nowNs: UInt64, timeoutNs: UInt64 = tapStallTimeoutNs) -> Bool {
+        lastCallbackNs > 0 && nowNs > lastCallbackNs && (nowNs - lastCallbackNs) > timeoutNs
+    }
+
+    func checkHealth() {
+        guard !stopping.load(ordering: .relaxed) else { return }
+        let nowNs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        let lastNs = lastCallbackUptimeNs.load(ordering: .relaxed)
+        if Self.isCallbackStalled(lastCallbackNs: lastNs, nowNs: nowNs) {
+            let stalledSec = Double(nowNs - lastNs) / 1_000_000_000.0
+            guard !restartExitFired.exchange(true, ordering: .sequentiallyConsistent) else { return }
+            fputs(String(format: "TAP_STALLED idle_s=%.1f\n", stalledSec), stderr)
+            logError(
+                String(
+                    format: "CoreAudio tap IO callback stalled for %.1fs; exiting for restart",
+                    stalledSec)
+            )
+            DispatchQueue.global().async { [self] in
+                teardown()
+                exit(tapFormatChangedExitStatus)
+            }
+            return
+        }
+
+        if !silentWarningLogged && startedUptimeNs > 0
+            && !fastConverter.seenNonZeroAudio.load(ordering: .relaxed)
+            && nowNs > startedUptimeNs && (nowNs - startedUptimeNs) >= silentStartupWarningNs
+        {
+            silentWarningLogged = true
+            logWarning(
+                "No non-zero audio samples received after 60s from PID \(pid). If audio is playing, grant System Audio Recording permission in System Settings > Privacy & Security > Audio & Video Recording."
+            )
+        }
+    }
+
+    private func bufferFrameSizeRange(_ device: AudioObjectID) -> (min: Int, max: Int)? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyBufferFrameSizeRange,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -455,21 +625,58 @@ final class CoreAudioTapCapture: AudioCaptureBackend, @unchecked Sendable {
         var range = AudioValueRange()
         var size = UInt32(MemoryLayout<AudioValueRange>.size)
         let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &range)
-        var frames = floorFrames
-        if status == noErr, range.mMaximum.isFinite, range.mMaximum > 0 {
-            frames = max(floorFrames, min(Int(range.mMaximum), ceilingFrames))
-            logInfo("Aggregate IO buffer frame size range max: \(Int(range.mMaximum)) frames")
-        } else {
-            logInfo(
-                "Aggregate IO buffer frame size range unavailable (\(osStatusDescription(status))); using \(floorFrames) frames"
+        guard status == noErr, range.mMaximum.isFinite, range.mMaximum > 0 else {
+            logInfo("Aggregate IO buffer frame size range unavailable (\(osStatusDescription(status)))")
+            return nil
+        }
+        let minFrames = range.mMinimum.isFinite && range.mMinimum > 0 ? Int(range.mMinimum) : 1
+        let maxFrames = Int(range.mMaximum)
+        logInfo("Aggregate IO buffer frame size range: \(minFrames)..\(maxFrames) frames")
+        return (minFrames, maxFrames)
+    }
+
+    private func queryMaxBufferFrames(for device: AudioObjectID) -> Int? {
+        bufferFrameSizeRange(device)?.max
+    }
+
+    /// Raises the private capture aggregate's IO buffer (default 4096 frames ≈ 85 ms @ 48 kHz) so
+    /// coreaudiod and mac-capture wake ~8x less often without changing the target app's output buffer.
+    private func configureAggregateBufferSize(
+        for device: AudioObjectID, requestedFrames: Int, maxRangeFrames: Int?
+    ) {
+        let clamped = maxRangeFrames.map { min(requestedFrames, $0) } ?? requestedFrames
+        guard clamped > 0 else { return }
+        var frames = UInt32(clamped)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSize,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectSetPropertyData(
+            device, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &frames)
+        if status != noErr {
+            logError(
+                "Setting aggregate IO buffer frame size to \(frames) failed: \(osStatusDescription(status))"
             )
+        }
+    }
+
+    /// Sizes the converter scratch from the aggregate's largest IO buffer so the IO proc never
+    /// has to truncate. Runs before AudioDeviceStart (allocation is not allowed on the IO thread).
+    private func reserveScratch(maxRangeFrames: Int?) {
+        let floorFrames = 16384
+        let ceilingFrames = 1 << 20
+        var frames = floorFrames
+        if let maxRangeFrames, maxRangeFrames > 0 {
+            frames = max(floorFrames, min(maxRangeFrames, ceilingFrames))
         }
         fastConverter.reserve(maxFrames: frames)
     }
 
     func handleAudioIO(inputData: UnsafePointer<AudioBufferList>) -> OSStatus {
         guard !drainThread.broken else { return noErr }
-        let start = metricsEnabled ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0
+        let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        lastCallbackUptimeNs.store(start, ordering: .relaxed)
 
         let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
         fastConverter.enqueueTapFloat(
