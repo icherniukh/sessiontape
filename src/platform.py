@@ -28,7 +28,8 @@ def get_platform_backend(
         from src.backends.windows_capture import WindowsCaptureBackend
 
         diag = capture_diag or (mac_options.diag if mac_options else False)
-        return WindowsCaptureBackend(diag=diag)
+        metrics = mac_options.metrics if mac_options is not None else True
+        return WindowsCaptureBackend(diag=diag, metrics=metrics)
     elif sys.platform == "darwin":
         from src.backends.macos_capture import MacCaptureBackend
 

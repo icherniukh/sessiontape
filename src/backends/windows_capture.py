@@ -9,14 +9,17 @@ log = logging.getLogger("sessiontape")
 
 
 class WindowsCaptureBackend(CaptureBackend):
-    def __init__(self, *, diag: bool = False) -> None:
+    def __init__(self, *, diag: bool = False, metrics: bool = True) -> None:
         self._diag = diag
+        self._metrics = metrics
 
     def start(self, pid: int, sample_rate: int) -> subprocess.Popen:
         exe = _find_executable("sessiontape-capture-win.exe")
         cmd = [exe, "--pid", str(pid), "--sample-rate", str(sample_rate)]
         if self._diag:
             cmd.append("--debug")
+        if not self._metrics:
+            cmd.append("--no-metrics")
         log.info(f"Launching capture executable: {' '.join(cmd)}")
 
         kwargs = {}

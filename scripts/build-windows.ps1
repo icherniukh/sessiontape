@@ -1,3 +1,8 @@
+param(
+    [switch]$SkipCaptureBuild,
+    [switch]$RunTests
+)
+
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -5,19 +10,28 @@ $ProjectRoot = Split-Path -Parent $ScriptDir
 Set-Location $ProjectRoot
 
 $CaptureExe = "windows-capture\sessiontape-capture-win.exe"
-if (Test-Path $CaptureExe) {
-    Write-Host "Windows capture binary already built, skipping."
+if ($SkipCaptureBuild -and (Test-Path $CaptureExe)) {
+    Write-Host "Skipping Windows capture binary rebuild (-SkipCaptureBuild)."
 } else {
     Write-Host "Building Windows capture binary..."
-    & .\windows-capture\build.ps1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to build capture binary."
+    Push-Location "$ProjectRoot\windows-capture"
+    try {
+        if ($RunTests) {
+            & .\build.ps1 -RunTests
+        } else {
+            & .\build.ps1
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to build capture binary (exit code $LASTEXITCODE)"
+        }
+    } finally {
+        Pop-Location
     }
 }
 
 Write-Host "Building standalone executable..."
 if (Test-Path "dist") { Remove-Item -Path "dist" -Recurse -Force }
-uv run pyinstaller "$ProjectRoot\sessiontape.spec" --distpath "$ProjectRoot\dist" --workpath "$ProjectRoot\build" --clean --noconfirm
+uv run --with pyinstaller pyinstaller "$ProjectRoot\sessiontape.spec" --distpath "$ProjectRoot\dist" --workpath "$ProjectRoot\build" --clean --noconfirm
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
 $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
@@ -44,9 +58,9 @@ if ($iscc) {
 $wixCmd = Get-Command wix -ErrorAction SilentlyContinue
 if ($wixCmd) {
     $version = (git describe --tags --abbrev=0 2>$null) -replace '^v', ''
-    if (-not $version) { $version = "1.3.0" } # WiX requires a strict version format like x.y.z
+    if (-not $version) { $version = "1.4.0" } # WiX requires a strict version format like x.y.z
     if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
-        $version = "1.3.0" # Fallback if tag is not a valid MSI version
+        $version = "1.4.0" # Fallback if tag is not a valid MSI version
     }
     Write-Host "Building WiX installer (version $version)..."
     & wix build "$ScriptDir\installer.wxs" -acceptEula wix7 -d AppVersion=$version -b "$ProjectRoot" -o "$ProjectRoot\dist\sessiontape.msi"

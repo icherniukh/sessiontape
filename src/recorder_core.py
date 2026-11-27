@@ -4,6 +4,7 @@ import math
 import operator
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,8 @@ from src.events import (
 
 log = logging.getLogger("sessiontape")
 
+_RAW_RATE_RE = re.compile(r"_(\d+)hz$")
+
 
 def db_to_rms(db: float) -> float:
     # 0 dBFS = 32768 for 16-bit audio
@@ -42,18 +45,8 @@ def _find_executable(name: str) -> str:
         if os.path.exists(bundle_exe_path):
             return bundle_exe_path
 
-    path = shutil.which(name)
-    if path:
-        return path
-    # macOS LaunchAgents often lack standard interactive PATHs
-    for fallback in [
-        f"/opt/homebrew/bin/{name}",
-        f"/usr/local/bin/{name}",
-        f"/usr/bin/{name}",
-    ]:
-        if os.path.isfile(fallback):
-            return fallback
-
+    # When running from a source checkout, prefer the local native capture build so an older
+    # system-installed binary on PATH can never shadow workspace changes.
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for local_build in [
         os.path.join(repo_root, "mac-capture", ".build", "release", name),
@@ -63,6 +56,31 @@ def _find_executable(name: str) -> str:
     ]:
         if os.path.isfile(local_build):
             return local_build
+
+    path = shutil.which(name)
+    if path:
+        return path
+    if sys.platform == "win32":
+        exe_name = name if name.lower().endswith(".exe") else f"{name}.exe"
+        win_dirs = [
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links"),
+            os.path.join(os.environ.get("USERPROFILE", ""), "scoop", "shims"),
+            os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "chocolatey", "bin"),
+        ]
+        for directory in win_dirs:
+            if directory:
+                candidate = os.path.join(directory, exe_name)
+                if os.path.isfile(candidate):
+                    return candidate
+        return name
+    # macOS LaunchAgents often lack standard interactive PATHs
+    for fallback in [
+        f"/opt/homebrew/bin/{name}",
+        f"/usr/local/bin/{name}",
+        f"/usr/bin/{name}",
+    ]:
+        if os.path.isfile(fallback):
+            return fallback
     return name
 
 
@@ -71,6 +89,7 @@ class _ExportJob:
     raw_path: str
     output_path: str
     recovery: bool = False
+    sample_rate: Optional[int] = None
 
 
 class ExportManager:
@@ -105,10 +124,21 @@ class ExportManager:
         )
         self._worker.start()
 
-    def enqueue(self, raw_path: str, output_path: str, recovery: bool = False) -> None:
+    def enqueue(
+        self,
+        raw_path: str,
+        output_path: str,
+        recovery: bool = False,
+        sample_rate: Optional[int] = None,
+    ) -> None:
         self.start()
         self._jobs.put(
-            _ExportJob(raw_path=raw_path, output_path=output_path, recovery=recovery)
+            _ExportJob(
+                raw_path=raw_path,
+                output_path=output_path,
+                recovery=recovery,
+                sample_rate=sample_rate,
+            )
         )
 
     def shutdown(self) -> None:
@@ -140,11 +170,12 @@ class ExportManager:
                 recovery=job.recovery,
             )
         )
+        effective_rate = job.sample_rate or self.sample_rate
         try:
             if self.export_format == "mp3":
-                self._convert_mp3(raw_path, output_path)
+                self._convert_mp3(raw_path, output_path, sample_rate=effective_rate)
             else:
-                self._convert_wav(raw_path, output_path)
+                self._convert_wav(raw_path, output_path, sample_rate=effective_rate)
         except Exception as exc:
             log.exception(f"Failed conversion for {raw_path}")
             self._emit(
@@ -167,22 +198,28 @@ class ExportManager:
             )
         )
 
-    def _convert_wav(self, raw_path: str, output_path: str) -> None:
+    def _convert_wav(
+        self, raw_path: str, output_path: str, sample_rate: Optional[int] = None
+    ) -> None:
+        effective_rate = sample_rate or self.sample_rate
         with open(raw_path, "rb") as raw_file, wave.open(output_path, "wb") as wav_file:
             wav_file.setnchannels(self.channels)
             wav_file.setsampwidth(self.bytes_per_sample)
-            wav_file.setframerate(self.sample_rate)
+            wav_file.setframerate(effective_rate)
             while chunk := raw_file.read(1024 * 1024):
                 wav_file.writeframes(chunk)
 
-    def _convert_mp3(self, raw_path: str, output_path: str) -> None:
+    def _convert_mp3(
+        self, raw_path: str, output_path: str, sample_rate: Optional[int] = None
+    ) -> None:
+        effective_rate = sample_rate or self.sample_rate
         cmd = [
             _find_executable("ffmpeg"),
             "-y",
             "-f",
             "s16le",
             "-ar",
-            str(self.sample_rate),
+            str(effective_rate),
             "-ac",
             str(self.channels),
             "-i",
@@ -191,8 +228,11 @@ class ExportManager:
             "libmp3lame",
             "-b:a",
             "320k",
-            output_path,
         ]
+        # MPEG-1 Layer III caps output sample rate at 48 kHz; downsample 88.2/96/192 kHz taps.
+        if effective_rate > 48000:
+            cmd.extend(["-ar", "48000"])
+        cmd.append(output_path)
 
         kwargs = {}
         if sys.platform == "win32":
@@ -213,7 +253,7 @@ class PCMStreamRecorder:
         sample_rate: int = 48000,
         silence_threshold_db: float = -50.0,
         min_silence_duration: float = 15.0,
-        min_segment_duration: float = 10.0,
+        min_segment_duration: float = 30.0,
         decay_tail: float = 5.0,
         export_format: str = "wav",
         export_manager: Optional[ExportManager] = None,
@@ -260,14 +300,22 @@ class PCMStreamRecorder:
         self.last_active_at: float = (
             0.0  # epoch time of last real audio chunk in ACTIVE state
         )
-        self._last_rms: float = 0.0  # for drop detection
-        self._consecutive_zero_chunks: int = 0  # perfect zeros = tap broken signal
-
-        self._tap_broken_fired: bool = False
+        self._last_rms: float = 0.0
 
         self._raw_path: Optional[str] = None
         self._output_path: Optional[str] = None
         self._raw_file = None
+
+    def set_sample_rate(self, sample_rate: int) -> None:
+        if sample_rate <= 0 or sample_rate == self.sample_rate:
+            return
+        self.sample_rate = sample_rate
+        self.chunk_size = int(
+            self.sample_rate
+            * self.chunk_duration
+            * self.channels
+            * self.bytes_per_sample
+        )
 
     def reset(self) -> None:
         self.state = "PASSIVE"
@@ -276,8 +324,6 @@ class PCMStreamRecorder:
         self._chunk_count = 0
         self.last_active_at = 0.0
         self._last_rms = 0.0
-        self._consecutive_zero_chunks = 0
-        self._tap_broken_fired = False
 
     def _emit(self, event: Event) -> None:
         if self.event_sink:
@@ -294,50 +340,13 @@ class PCMStreamRecorder:
                 f"[{self.state}] chunk #{self._chunk_count} RMS={rms:.0f} ({db:.1f} dB), threshold={self.rms_threshold:.0f}"
             )
 
-        # Detect sudden drop to near-zero while actively recording — tap may have broken.
-        # Only meaningful in ACTIVE state; in PASSIVE, zeros are expected (music not playing).
-        if self.state == "ACTIVE":
-            if self._last_rms > self.rms_threshold * 10 and rms == 0:
-                log.warning(
-                    f"[DIAG] RMS dropped to zero at chunk #{self._chunk_count} (was {self._last_rms:.0f}) — possible tap failure"
-                )
-            elif self._last_rms > self.rms_threshold * 100 and rms < self.rms_threshold:
-                db_before = 20 * math.log10(self._last_rms / 32768.0)
-                db_now = 20 * math.log10(rms / 32768.0) if rms > 0 else -math.inf
-                log.warning(
-                    f"[DIAG] RMS dropped from {db_before:.1f} dB to {db_now:.1f} dB at chunk #{self._chunk_count}"
-                )
+        if self.state == "ACTIVE" and self._last_rms > self.rms_threshold * 10 and is_silent:
+            db_before = 20 * math.log10(self._last_rms / 32768.0)
+            db_now = 20 * math.log10(rms / 32768.0) if rms > 0 else -math.inf
+            log.debug(
+                f"Audio dropped to silence ({db_before:.1f} dB -> {db_now:.1f} dB) at chunk #{self._chunk_count}"
+            )
         self._last_rms = rms
-
-        # Perfect zeros (rms == 0.0 exactly) are a strong broken-tap signal.
-        # Real silence has noise floor; a tap delivering all-zero bytes is pathological.
-        if rms == 0.0:
-            self._consecutive_zero_chunks += 1
-            # 900 chunks = 90s @ 100ms/chunk. This replaces the old watchdog timer.
-            if (
-                self.state == "ACTIVE"
-                and self._consecutive_zero_chunks == 900
-                and not self._tap_broken_fired
-            ):
-                log.warning(
-                    f"[DIAG] 900 consecutive all-zero chunks (90s) while ACTIVE — "
-                    f"tap definitely broken. Pushing TapBroken event."
-                )
-                self._tap_broken_fired = True
-                if self.on_tap_broken:
-                    self.on_tap_broken()
-            elif self.state == "ACTIVE" and self._consecutive_zero_chunks in (
-                10,
-                50,
-                150,
-            ):
-                log.warning(
-                    f"[DIAG] {self._consecutive_zero_chunks} consecutive all-zero chunks "
-                    f"({self._consecutive_zero_chunks * self.chunk_duration:.0f}s) — "
-                    f"tap likely broken"
-                )
-        else:
-            self._consecutive_zero_chunks = 0
 
         if self.state == "PASSIVE":
             self.ring_buffer.append(chunk)
@@ -364,20 +373,10 @@ class PCMStreamRecorder:
         if is_silent:
             self.silence_count += 1
             if self.silence_count >= self.silence_chunks_threshold:
-                if self._consecutive_zero_chunks > 10:
-                    # Tap is delivering perfect zeros — broken tap, not real silence.
-                    # Don't split the recording; let the watchdog restart the tap instead.
-                    # Throttle this warning to avoid audio glitches due to logging overhead.
-                    if self.silence_count % 100 == 0:
-                        log.warning(
-                            f"[DIAG] Suppressing session close — tap broken "
-                            f"({self._consecutive_zero_chunks} zero chunks). Watchdog will restart."
-                        )
-                else:
-                    log.info("Continuous silence detected. Transitioning to PASSIVE.")
-                    self._close_current_file()
-                    self.state = "PASSIVE"
-                    self.last_active_at = time.time()
+                log.info("Continuous silence detected. Transitioning to PASSIVE.")
+                self._close_current_file()
+                self.state = "PASSIVE"
+                self.last_active_at = time.time()
         else:
             self.silence_count = 0
             self.last_active_at = time.time()  # refresh on every real audio chunk
@@ -391,7 +390,9 @@ class PCMStreamRecorder:
 
     def _open_new_file(self) -> None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        self._raw_path = os.path.join(self.output_dir, f".rb_session_{timestamp}.raw")
+        self._raw_path = os.path.join(
+            self.output_dir, f".rb_session_{timestamp}_{self.sample_rate}hz.raw"
+        )
         self._output_path = os.path.join(
             self.output_dir,
             f"rb_session_{timestamp}.{self.export_format}",
@@ -436,7 +437,9 @@ class PCMStreamRecorder:
                 )
                 os.unlink(self._raw_path)
             else:
-                self.export_manager.enqueue(self._raw_path, output_path)
+                self.export_manager.enqueue(
+                    self._raw_path, output_path, sample_rate=self.sample_rate
+                )
         else:
             self._emit(
                 SegmentClosed(
@@ -469,9 +472,10 @@ def recover_orphaned_raw_files(
         return
 
     # Match both hidden (.rb_session...) and visible just in case
+    escaped_dir = glob.escape(output_dir)
     patterns = [
-        os.path.join(output_dir, ".rb_session_*.raw"),
-        os.path.join(output_dir, "*.raw"),
+        os.path.join(escaped_dir, ".rb_session_*.raw"),
+        os.path.join(escaped_dir, "*.raw"),
     ]
     raw_files = set()
     for p in patterns:
@@ -506,10 +510,18 @@ def recover_orphaned_raw_files(
         base = os.path.splitext(os.path.basename(raw_path))[0]
         if base.startswith("."):
             base = base[1:]
+        rate_match = _RAW_RATE_RE.search(base)
+        if rate_match:
+            file_rate = int(rate_match.group(1))
+            base = base[: rate_match.start()]
+        else:
+            file_rate = sample_rate
 
         output_path = os.path.join(output_dir, f"{base}.{export_format}")
-        log.info(f"Recovering {raw_path} to {output_path}")
-        exporter.enqueue(raw_path, output_path, recovery=True)
+        log.info(f"Recovering {raw_path} to {output_path} ({file_rate} Hz)")
+        exporter.enqueue(
+            raw_path, output_path, recovery=True, sample_rate=file_rate
+        )
 
     if export_manager is None:
         exporter.shutdown()

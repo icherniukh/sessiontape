@@ -1,3 +1,4 @@
+import CoreAudio
 import Foundation
 import XCTest
 
@@ -198,5 +199,105 @@ final class CaptureMetricsTests: XCTestCase {
     func testP99ZeroWhenNoCallbacks() {
         XCTAssertEqual(
             CaptureMetrics.p99Ms(bucketCounts: [0, 0, 0, 0, 0, 0, 0, 0], totalCallbacks: 0, maxMs: 0), 0)
+    }
+
+    func testEmitFormatsByteCountsAboveInt32MaxWithoutOverflow() {
+        let metrics = CaptureMetrics(windowSeconds: 1.0)
+        var emitted: String?
+        let threeGigabytes = 3_000_000_000
+        metrics.emitIfDue(
+            bytesWritten: threeGigabytes,
+            droppedWrites: 0,
+            emit: { emitted = $0 },
+            force: true
+        )
+        XCTAssertNotNil(emitted)
+        XCTAssertTrue(emitted?.contains("bytes=3000000000") == true, "got: \(emitted ?? "nil")")
+    }
+}
+
+final class FastPCMConverterTests: XCTestCase {
+    func testClampToInt16HandlesNaNAndInfinitiesWithoutTrapping() {
+        let converter = FastPCMConverter(sampleRate: 48_000)
+        XCTAssertEqual(converter.clampToInt16(.nan), 0)
+        XCTAssertEqual(converter.clampToInt16(-.nan), 0)
+        XCTAssertEqual(converter.clampToInt16(.infinity), 32767)
+        XCTAssertEqual(converter.clampToInt16(-.infinity), -32768)
+        XCTAssertEqual(converter.clampToInt16(1.5), 32767)
+        XCTAssertEqual(converter.clampToInt16(-1.5), -32768)
+        XCTAssertEqual(converter.clampToInt16(0.0), 0)
+    }
+
+    func testEnqueueTapFloatSanitizesNaNAndTracksNonZeroSignal() {
+        let converter = FastPCMConverter(sampleRate: 48_000)
+        let queue = PCMOutboundQueue(capacityBytes: 1024)
+
+        // Pure zero / NaN buffer keeps seenNonZeroAudio == false and outputs zeros for NaN.
+        var silentAndNaN: [Float] = [0.0, .nan, -0.0, .signalingNaN]
+        silentAndNaN.withUnsafeMutableBytes { raw in
+            var abl = AudioBufferList(
+                mNumberBuffers: 1,
+                mBuffers: AudioBuffer(
+                    mNumberChannels: 2,
+                    mDataByteSize: UInt32(raw.count),
+                    mData: raw.baseAddress
+                )
+            )
+            withUnsafeMutablePointer(to: &abl) { ptr in
+                converter.enqueueTapFloat(
+                    UnsafeMutableAudioBufferListPointer(ptr),
+                    channels: 2,
+                    interleaved: true,
+                    queue: queue
+                )
+            }
+        }
+        XCTAssertFalse(converter.seenNonZeroAudio.load(ordering: .relaxed))
+
+        var out = [Int16](repeating: -1, count: 4)
+        let readBytes = out.withUnsafeMutableBytes {
+            queue.dequeueBlocking(into: $0.baseAddress!, maxBytes: $0.count)
+        }
+        XCTAssertEqual(readBytes, 8)
+        XCTAssertEqual(out, [0, 0, 0, 0])
+
+        // Real audio sample flips seenNonZeroAudio to true and clamps +inf/-inf cleanly.
+        var activeSamples: [Float] = [0.5, -0.5, .infinity, -.infinity]
+        activeSamples.withUnsafeMutableBytes { raw in
+            var abl = AudioBufferList(
+                mNumberBuffers: 1,
+                mBuffers: AudioBuffer(
+                    mNumberChannels: 2,
+                    mDataByteSize: UInt32(raw.count),
+                    mData: raw.baseAddress
+                )
+            )
+            withUnsafeMutablePointer(to: &abl) { ptr in
+                converter.enqueueTapFloat(
+                    UnsafeMutableAudioBufferListPointer(ptr),
+                    channels: 2,
+                    interleaved: true,
+                    queue: queue
+                )
+            }
+        }
+        XCTAssertTrue(converter.seenNonZeroAudio.load(ordering: .relaxed))
+
+        let activeBytes = out.withUnsafeMutableBytes {
+            queue.dequeueBlocking(into: $0.baseAddress!, maxBytes: $0.count)
+        }
+        XCTAssertEqual(activeBytes, 8)
+        XCTAssertEqual(out, [16384, -16384, 32767, -32768])
+    }
+
+    func testCallbackStallPredicateRespectsTimeout() {
+        let base: UInt64 = 10_000_000_000
+        XCTAssertFalse(CoreAudioTapCapture.isCallbackStalled(lastCallbackNs: 0, nowNs: base))
+        XCTAssertFalse(
+            CoreAudioTapCapture.isCallbackStalled(
+                lastCallbackNs: base, nowNs: base + tapStallTimeoutNs))
+        XCTAssertTrue(
+            CoreAudioTapCapture.isCallbackStalled(
+                lastCallbackNs: base, nowNs: base + tapStallTimeoutNs + 1))
     }
 }

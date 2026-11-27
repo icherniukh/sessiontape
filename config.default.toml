@@ -3,9 +3,10 @@
 # macOS:   copy to ~/Library/Application Support/sessiontape/config.toml
 
 [recording]
-sample_rate = 48000
+sample_rate = 48000          # Target rate for WASAPI / SCK; macOS CoreAudio tap adopts native device rate
 output_dir = "~/Music/sessiontape"
-export_format = "wav"  # allow "wav" or "mp3"
+export_format = "wav"        # "wav" or "mp3" (mp3 requires ffmpeg)
+# capture_backend = "auto"   # "auto", "mac-capture" (macOS), or "windows" (Windows)
 
 [trigger]
 silence_threshold_db = -50

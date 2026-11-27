@@ -26,16 +26,22 @@ class ProcessMonitor(threading.Thread):
         target = self.process_name.lower()
         target_stem = os.path.splitext(target)[0]
         matches: list[tuple[float, int]] = []
-        for proc in psutil.process_iter(["pid", "name", "create_time"]):
+        for proc in psutil.process_iter():
             try:
-                name = proc.info.get("name")
+                cached_info = getattr(proc, "info", None)
+                info = (
+                    cached_info
+                    if cached_info is not None
+                    else proc.as_dict(attrs=["pid", "name", "create_time"])
+                )
+                name = info.get("name")
                 if not name:
                     continue
                 normalized = name.lower()
                 if normalized == target or os.path.splitext(normalized)[0] == target_stem:
-                    create_time = proc.info.get("create_time") or 0.0
-                    matches.append((create_time, proc.info["pid"]))
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    create_time = info.get("create_time") or 0.0
+                    matches.append((create_time, info["pid"]))
+            except (psutil.Error, OSError, SystemError):
                 continue
         matches.sort()
         return [pid for _, pid in matches]
@@ -46,7 +52,10 @@ class ProcessMonitor(threading.Thread):
 
     def run(self):
         while not self._stop_event.is_set():
-            self._poll_once()
+            try:
+                self._poll_once()
+            except Exception:
+                log.exception("Unexpected error in ProcessMonitor poll loop")
             self._stop_event.wait(timeout=self.poll_interval)
 
     def stop(self):
@@ -91,12 +100,15 @@ class ProcessMonitor(threading.Thread):
         elif not is_running and was_running:
             # Debounce stop: Rekordbox briefly disappears between
             # process restarts during startup. Wait and re-check.
+            old_pid = self._current_pid
             self._stop_event.wait(timeout=self.stop_delay)
             matching_pids = self._find_matching_pids()
             if matching_pids:
-                # Process came back — update PID, don't fire stop
-                self._current_pid = matching_pids[0]
+                if old_pid in matching_pids:
+                    return
+                new_pid = matching_pids[0]
+                self._current_pid = new_pid
+                self.queue.put(ProcessReplaced(old_pid=old_pid, new_pid=new_pid))
                 return
-            stopped_pid = self._current_pid
             self._current_pid = None
-            self.queue.put(ProcessStopped(pid=stopped_pid))
+            self.queue.put(ProcessStopped(pid=old_pid))

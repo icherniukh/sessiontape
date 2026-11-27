@@ -1,6 +1,13 @@
 # macOS Audio Popping — Root Cause Analysis
 
-> **Status:** The CoreAudio tap backend is implemented (`--backend tap|sck|auto`), but the tap-vs-SCK A/B on Rekordbox hardware has not been run. No result is recorded here; the root cause remains unconfirmed. Tracked in [Issue #33](https://github.com/icherniukh/sessiontape/issues/33).
+> **Status (2026-11-27):** Live `coreaudiod` profiling and production logs from Nov 19–24 identified
+> two distinct causes: (1) unnecessary `[ahal_dsp]` drift resampling (`drift=1`) and a 512-frame
+> buffer on the private tap aggregate adding +41% steady-state `coreaudiod` CPU and 8x extra RT
+> wakeups on top of Rekordbox's narrow 512-frame margin, and (2) `PCMStreamRecorder` misclassifying
+> paused digital-zero audio (`rms == 0.0`) as `TapBroken`, forcing mid-session aggregate teardown
+> restarts every 90s of pause. Both are fixed on `main` (`drift=0`, 4096-frame aggregate buffer,
+> clean silence splitting); live Rekordbox A/B (`scripts/tap-ab.sh base` vs `v130`) is ready to run.
+> Tracked in [Issue #33](https://github.com/icherniukh/sessiontape/issues/33).
 
 ## Problem
 
@@ -131,3 +138,77 @@ AGENTS.md says "ProcTap/ScreenCaptureKit returns all zeros for Rekordbox — don
 current mac-capture binary IS ScreenCaptureKit (SCStream). It works. The earlier failure was
 likely a different SCK API variant (process tap via ProcTap), not the current SCContentFilter +
 SCStream path. CATapDescription is a third distinct path worth testing.
+
+## Hardware run 2026-11-19
+
+Setup: SessionTape 1.3.0 (Homebrew), CoreAudio tap backend (`auto` chose the tap; no SCK
+fallback), Rekordbox 7 playing to `BuiltInSpeakerDevice`, 48 kHz, 512-frame IO buffer, MacBook on
+battery, macOS 27.2.
+
+- **Pops need the tap.** The user reports none without SessionTape running, even when scrubbing.
+- **Our process is not the cause.** For every one-second window across all runs: `drops=0`,
+  `hal_overload=0`, `trunc=0`, and `cb_max` ≤ 0.05 ms in the IO proc. The Python reader kept up
+  (`gap_max` ≈ 107 ms against a 2 s ring). (`PCMOutboundQueue` uses a drop-newest overflow policy
+  with no silence fill so the real-time producer never touches `tail`; if `drops > 0`, the segment
+  is shorter than wall-clock time and splices across the dropped chunk.)
+- **The overload is in Rekordbox's IO cycle.** Each pop matches a Rekordbox
+  `HALC_ProxyIOContext::IOWorkLoop: skipping cycle due to overload` line. For the same event,
+  coreaudiod logs `cause: ClientHALIODurationExceededBudget,SafetyViolationOccurred` with
+  `HostApplicationDisplayID: com.pioneerdj.rekordboxdj`, `HAL_client_IO_duration` of
+  14.1–17.1 ms against an `io_cycle_budget` of 11.35 ms, and low `scheduler_latency` (18–20 µs).
+  Rekordbox's IO thread is woken on time, then overruns. In one event it used ≈ 1.5 ms of CPU
+  over a 15 ms cycle (waiting); in another, ≈ 14 ms of system time.
+- **Trigger is load.** Five overloads between 20:13 and 20:45, all while tapped (two at
+  20:15:43 and 20:17:58, a few minutes after Rekordbox launched). Three came within 40 s of
+  deliberate scrubbing/rewinding (20:31:58, 20:32:28, 20:32:39). The ~10 min of tapped time
+  between 20:17:58 and 20:31:58 without scrubbing (partly paused) had none, nor did 20:32:39–20:45.
+- Not the trigger: Rekordbox's network/TLS logging (heavier during clean stretches), and macOS's own
+  `AudioTap-…` (corespeechd, pid 815), which runs with the speaker in every case.
+
+By this doc's own decision rule (a tap path without SCK/replayd still overloads), the remaining
+suspect is the tap/aggregate work coreaudiod adds inside Rekordbox's cycle.
+
+### Tap configuration profiling & fixes (2026-11-27)
+
+1. **Corrected HAL mental model & untapped baseline:** Every user-space CoreAudio client already runs on
+   `HALC_ProxyIOContext` <-> `HALS_IOContext_Legacy_Impl`. Tapping does not move Rekordbox onto our
+   aggregate; `coreaudiod` keeps Rekordbox's `HALS_IOContext` on `BuiltInSpeakerDevice` and attaches
+   `HALS_MultiTap_Engine` to copy rendered buffers. Crucially, Rekordbox 7 at 512 frames (`10.67 ms`
+   cycle) produces audible `HALC_ProxyIOContext::IOWorkLoop: skipping cycle due to overload` glitches
+   **with no SessionTape process running**: three isolated skips on `2026-11-24` (`18:47:03`,
+   `20:46:47`, `22:45:22`) and two audible dropouts on `2026-11-27` (`03:43:22.749` and `03:43:32.738`
+   on AC power, where Rekordbox's audio workgroup spent `31.17 ms` and `13.60 ms` in kernel/system time
+   during a 1,564 events/s QUIC/TLS network burst while `playwright-mcp` `chrome-headless-shell`
+   processes also cycled `BuiltInSpeakerDevice`). Rekordbox at 512 frames already operates near its
+   cycle budget; an unoptimized tap simply pushes scrubbing spikes over that cliff more often.
+2. **Measured `coreaudiod` overhead (`BuiltInSpeakerDevice`, 48 kHz / 512 frames):**
+   - `untapped`: `170 ms` `coreaudiod` CPU per 2s
+   - `v130` (`512` frames, `drift=1`, `clock=0`): `240 ms` (+41% `coreaudiod` CPU; 200 tap CBs/2s)
+   - `subdev` (`512` frames, `drift=1`, speaker as `MainSubDevice`): `230 ms` (+35%; opens an output stream on the speaker)
+   - `clockdev` (`4096` frames, `drift=0`, `ClockDevice=Speaker`): `170 ms`, 25 tap CBs/2s, `outStreams=0`, but aligns 4096-frame tap wakeups onto the speaker's sample boundary (reduced headroom at 10.2 ms spin)
+   - **New `base` (`4096` frames, `drift=0`, `clock=0`):** `160 ms` (~0% overhead above `untapped`), speaker stays at `512` frames, `outStreams=0`, and tap RT wakeups drop 8x (200 -> 25 CBs/2s).
+3. **Eliminated false 90s `TapBroken` restarts:** Production logs from `2026-11-19` to `2026-11-21`
+   showed 7 of 8 DJ segments failed to split on 15s pauses because paused digital decks emit exact
+   `0.0f` (`rms == 0.0`), which suppressed session close and killed/recreated the tap aggregate at
+   90s (causing speaker routing pops). `PCMStreamRecorder` now splits cleanly on digital-zero silence.
+
+### Tap configuration A/B
+
+`scripts/tap-ab.sh <variant> [seconds]` runs `mac-capture/.build/release/mac-capture` against
+Rekordbox, counts `skipping cycle due to overload` lines for that exact window, and verifies non-zero
+audio. Scrub the same way in each run and keep the power state identical.
+
+| Variant | Toggles | Description |
+|---|---|---|
+| `base` | none | Default: unpinned, `drift=0`, `clock=0`, 4096-frame aggregate buffer |
+| `v130` | `DRIFT=1 BUFFER_FRAMES=0` | `v1.3.0` baseline: unpinned, `drift=1`, 512-frame HAL default buffer |
+| `buf512` | `BUFFER_FRAMES=512` | `drift=0` with 512-frame aggregate buffer |
+| `drift1` | `DRIFT=1` | `drift=1` with 4096-frame aggregate buffer |
+| `pin` | `PIN=1` | Tap `deviceUID` pinned to Rekordbox's output device |
+| `clockdev` | `CLOCK=clockdev` | `kAudioAggregateDeviceClockDeviceKey` = output device (`outStreams=0`) |
+| `subdev` | `CLOCK=subdev` | Output device in `SubDeviceList` + `MainSubDevice` (`outStreams=1`) |
+| `sck` | `--sck` | ScreenCaptureKit fallback backend |
+
+Workaround if residual overloads persist under heavy battery scrubbing: a 1024-frame buffer in
+Rekordbox (21.3 ms budget) fits every 14.1–17.1 ms overrun measured on `2026-11-19` at the cost of
+~10 ms more output latency.

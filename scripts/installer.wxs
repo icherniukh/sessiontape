@@ -1,5 +1,5 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="SessionTape" Manufacturer="SessionTape" Version="$(var.AppVersion)" UpgradeCode="9b2d6a5d-1c3f-4e8c-a6a9-4b6a8a3a2a1a" Scope="perUser">
+  <Package Name="SessionTape" Manufacturer="Ivan Cherniukh" Version="$(var.AppVersion)" UpgradeCode="9b2d6a5d-1c3f-4e8c-a6a9-4b6a8a3a2a1a" Scope="perUser">
     <MajorUpgrade DowngradeErrorMessage="A newer version of SessionTape is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
@@ -9,6 +9,10 @@
           <Component Id="MainExecutable" Guid="3f6b4a2d-1c3f-4e8c-a6a9-4b6a8a3a2a1b">
             <File Id="SessionTapeExe" Source="dist\sessiontape.exe" KeyPath="yes" />
             <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+          </Component>
+          <Component Id="UserPathEnvironment" Guid="7c8d9e0f-1a2b-4c3d-8e9f-0a1b2c3d4e5f">
+            <RegistryValue Root="HKCU" Key="Software\sessiontape" Name="PathConfigured" Type="integer" Value="1" KeyPath="yes" />
+            <Environment Id="SessionTapeUserPath" Name="PATH" Value="[INSTALLFOLDER]" Permanent="no" Part="last" Action="set" System="no" />
           </Component>
         </Directory>
       </Directory>
@@ -26,18 +30,23 @@
 
     <Feature Id="MainFeature">
       <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="UserPathEnvironment" />
       <ComponentRef Id="ConfigFile" />
     </Feature>
 
-    <CustomAction Id="CleanupTaskAndProcesses" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="yes" Return="ignore"
-                  ExeCommand="powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;Stop-ScheduledTask -TaskName 'SessionTape' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'SessionTape' -Confirm:$false -ErrorAction SilentlyContinue; Get-Process sessiontape, sessiontape-capture-win -ErrorAction SilentlyContinue | Stop-Process -Force&quot;" />
+    <CustomAction Id="StopRunningProcesses" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="yes" Return="ignore"
+                  ExeCommand="powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;Stop-ScheduledTask -TaskName 'SessionTape' -ErrorAction SilentlyContinue; Get-Process sessiontape, sessiontape-capture-win -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue&quot;" />
+
+    <CustomAction Id="UnregisterScheduledTask" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="yes" Return="ignore"
+                  ExeCommand="powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;Unregister-ScheduledTask -TaskName 'SessionTape' -Confirm:$false -ErrorAction SilentlyContinue&quot;" />
 
     <CustomAction Id="CreateScheduledTask" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="yes" Return="ignore"
-                  ExeCommand="powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;$Action = New-ScheduledTaskAction -Execute '[INSTALLFOLDER]sessiontape.exe'; $Trigger = New-ScheduledTaskTrigger -AtLogOn; $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0; $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive; Register-ScheduledTask -TaskName 'SessionTape' -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null; Start-ScheduledTask -TaskName 'SessionTape'&quot;" />
+                  ExeCommand="powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;$Action = New-ScheduledTaskAction -Execute '[INSTALLFOLDER]sessiontape.exe'; $Trigger = New-ScheduledTaskTrigger -AtLogOn; $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0; $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive; Register-ScheduledTask -TaskName 'SessionTape' -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null; Start-ScheduledTask -TaskName 'SessionTape' -ErrorAction SilentlyContinue&quot;" />
 
     <InstallExecuteSequence>
-      <Custom Action="CleanupTaskAndProcesses" Before="RemoveFiles" Condition="Installed" />
-      <Custom Action="CreateScheduledTask" After="InstallFiles" Condition="NOT Installed" />
+      <Custom Action="StopRunningProcesses" Before="RemoveFiles" />
+      <Custom Action="UnregisterScheduledTask" After="StopRunningProcesses" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="CreateScheduledTask" After="InstallFiles" Condition="NOT (REMOVE=&quot;ALL&quot;)" />
     </InstallExecuteSequence>
   </Package>
 </Wix>

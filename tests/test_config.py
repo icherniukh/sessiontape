@@ -18,6 +18,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.capture_backend, "auto")
         self.assertEqual(cfg.silence_threshold_db, -50)
         self.assertEqual(cfg.min_silence_duration, 15)
+        self.assertEqual(cfg.min_segment_duration, 30)
         self.assertEqual(cfg.decay_tail, 5)
         self.assertEqual(cfg.poll_interval, 2.0)
         self.assertEqual(cfg.process_name, "rekordbox")
@@ -51,9 +52,12 @@ class TestConfig(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
             f.write(toml_content)
             f.flush()
-            cfg = Config.from_file(f.name)
+            path = f.name
 
-        os.unlink(f.name)
+        try:
+            cfg = Config.from_file(path)
+        finally:
+            os.unlink(path)
         self.assertEqual(cfg.sample_rate, 44100)
         self.assertEqual(cfg.capture_backend, "mac-capture")
         self.assertEqual(cfg.output_dir, "/tmp/my_sets")
@@ -72,9 +76,12 @@ class TestConfig(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
             f.write(toml_content)
             f.flush()
-            cfg = Config.from_file(f.name)
+            path = f.name
 
-        os.unlink(f.name)
+        try:
+            cfg = Config.from_file(path)
+        finally:
+            os.unlink(path)
         self.assertFalse(cfg.perf_metrics)
         self.assertFalse(cfg.mac_capture_metrics)
         self.assertTrue(cfg.mac_capture_diag)
@@ -97,11 +104,32 @@ class TestConfig(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sample_rate"):
             Config(sample_rate=0)
 
+        with self.assertRaisesRegex(ValueError, "sample_rate"):
+            Config(sample_rate=12345)
+
         with self.assertRaisesRegex(ValueError, "min_silence_duration"):
             Config(min_silence_duration=-1)
 
         with self.assertRaisesRegex(ValueError, "poll_interval"):
             Config(poll_interval=0)
+
+    def test_rejects_invalid_backends_and_non_boolean_flags(self):
+        with self.assertRaisesRegex(ValueError, "mac_capture_backend"):
+            Config(mac_capture_backend="bogus")
+
+        with self.assertRaisesRegex(ValueError, "capture_backend"):
+            Config(capture_backend="bogus")
+
+        toml_content = '[capture]\nperf_metrics = "false"\n'
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write(toml_content)
+            f.flush()
+            path = f.name
+        try:
+            with self.assertRaisesRegex(ValueError, "capture.perf_metrics"):
+                Config.from_file(path)
+        finally:
+            os.unlink(path)
 
 
 if __name__ == "__main__":

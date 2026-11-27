@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -18,7 +19,7 @@ typedef enum PROCESS_LOOPBACK_MODE {
 } PROCESS_LOOPBACK_MODE;
 
 typedef struct AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
-    DWORD                TargetProcessId;
+    DWORD                 TargetProcessId;
     PROCESS_LOOPBACK_MODE ProcessLoopbackMode;
 } AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS;
 
@@ -34,14 +35,23 @@ typedef struct AUDIOCLIENT_ACTIVATION_PARAMS {
 #define VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK L"VAD\\Process_Loopback"
 #endif
 
+#ifndef AUDCLNT_E_DEVICE_INVALIDATED
+#define AUDCLNT_E_DEVICE_INVALIDATED ((HRESULT)0x88890004L)
+#endif
+#ifndef AUDCLNT_E_UNSUPPORTED_FORMAT
+#define AUDCLNT_E_UNSUPPORTED_FORMAT ((HRESULT)0x88890008L)
+#endif
 #ifndef AUDCLNT_E_DEVICE_IN_USE
 #define AUDCLNT_E_DEVICE_IN_USE ((HRESULT)0x8889000AL)
 #endif
 #ifndef AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED
 #define AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED ((HRESULT)0x8889000EL)
 #endif
-#ifndef AUDCLNT_E_UNSUPPORTED_FORMAT
-#define AUDCLNT_E_UNSUPPORTED_FORMAT ((HRESULT)0x88890008L)
+#ifndef AUDCLNT_E_SERVICE_NOT_RUNNING
+#define AUDCLNT_E_SERVICE_NOT_RUNNING ((HRESULT)0x88890010L)
+#endif
+#ifndef AUDCLNT_E_RESOURCES_INVALIDATED
+#define AUDCLNT_E_RESOURCES_INVALIDATED ((HRESULT)0x88890026L)
 #endif
 #ifndef AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
 #define AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM 0x80000000
@@ -51,29 +61,40 @@ typedef struct AUDIOCLIENT_ACTIVATION_PARAMS {
 #endif
 
 #include <wrl/implements.h>
-#include <cstdint>
-#include <iostream>
-#include <io.h>
-#include <fcntl.h>
-#include <vector>
-#include <string>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
-#include <thread>
 #include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <fcntl.h>
+#include <io.h>
+#include <iostream>
+#include <mutex>
+#include <queue>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "pcm_convert.h"
 
 using namespace Microsoft::WRL;
 
 static bool g_debug = false;
 
-#define LOG_INFO(msg)  do { std::cerr << "INFO: "    << msg << "\n"; } while (0)
-#define LOG_WARN(msg)  do { std::cerr << "WARNING: " << msg << "\n"; } while (0)
-#define LOG_ERROR(msg) do { std::cerr << "ERROR: "   << msg << "\n"; } while (0)
-#define LOG_DEBUG(msg) do { if (g_debug) { std::cerr << "DEBUG: " << msg << "\n"; } } while (0)
+#define LOG_INFO(msg)  do { std::cerr << "INFO: "    << msg << "\n" << std::flush; } while (0)
+#define LOG_WARN(msg)  do { std::cerr << "WARNING: " << msg << "\n" << std::flush; } while (0)
+#define LOG_ERROR(msg) do { std::cerr << "ERROR: "   << msg << "\n" << std::flush; } while (0)
+#define LOG_DEBUG(msg) do { if (g_debug) { std::cerr << "DEBUG: " << msg << "\n" << std::flush; } } while (0)
 
 struct CoUninitGuard {
     ~CoUninitGuard() { CoUninitialize(); }
+};
+
+struct HandleGuard {
+    HANDLE handle = nullptr;
+    ~HandleGuard() {
+        if (handle && handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle);
+        }
+    }
 };
 
 struct CoTaskMemGuard {
@@ -86,6 +107,15 @@ struct CoTaskMemGuard {
         ptr = next;
     }
 };
+
+static std::string WideToUtf8(const wchar_t* wstr) {
+    if (!wstr || *wstr == L'\0') return "";
+    const int len = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) return "";
+    std::string out(static_cast<size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &out[0], len, nullptr, nullptr);
+    return out;
+}
 
 // COM completion handler for ActivateAudioInterfaceAsync
 class CActivateAudioInterfaceCompletionHandler :
@@ -106,10 +136,12 @@ public:
 
     STDMETHOD(ActivateCompleted)(IActivateAudioInterfaceAsyncOperation* operation)
     {
-        HRESULT hrActivate = S_OK;
+        HRESULT hrActivate = E_FAIL;
         ComPtr<IUnknown> punkAudioClient;
 
-        HRESULT hr = operation->GetActivateResult(&hrActivate, &punkAudioClient);
+        const HRESULT hr = operation->GetActivateResult(&hrActivate, &punkAudioClient);
+        m_hrOperation = hr;
+        m_hrActivate = hrActivate;
         if (SUCCEEDED(hr) && SUCCEEDED(hrActivate) && punkAudioClient) {
             punkAudioClient.As(&m_AudioClient);
         }
@@ -120,15 +152,21 @@ public:
 
     ComPtr<IAudioClient> m_AudioClient;
     HANDLE m_hActivateCompleted = nullptr;
+    HRESULT m_hrOperation = E_FAIL;
+    HRESULT m_hrActivate = E_FAIL;
     bool m_initFailed = false;
 };
 
 // Global state for IPC writer thread
-std::queue<std::vector<short>> audioQueue;
+std::queue<std::vector<int16_t>> audioQueue;
 std::mutex queueMutex;
 std::condition_variable queueCV;
 std::atomic<bool> isRunning{true};
-const size_t MAX_QUEUE_CHUNKS = 5000; // ~100 seconds of audio to prevent OOM
+std::atomic<uint64_t> g_bytesWritten{0};
+constexpr size_t MAX_QUEUE_CHUNKS = 5000; // ~50-100 seconds of audio to bound memory
+constexpr DWORD ACTIVATION_TIMEOUT_MS = 10000;
+constexpr ULONGLONG METRICS_INTERVAL_MS = 1000;
+constexpr ULONGLONG SILENT_STARTUP_WARN_MS = 60000;
 
 static void StopWriter() {
     {
@@ -140,7 +178,7 @@ static void StopWriter() {
 
 void WriterThread() {
     while (true) {
-        std::vector<short> chunk;
+        std::vector<int16_t> chunk;
         {
             std::unique_lock<std::mutex> lock(queueMutex);
             queueCV.wait(lock, [] { return !audioQueue.empty() || !isRunning; });
@@ -155,16 +193,17 @@ void WriterThread() {
         // On Windows blocking pipes, fwrite blocks when the buffer is full (not returns 0).
         // Returning 0 means an actual I/O error or the reader closed the pipe.
         size_t written = 0;
-        size_t total = chunk.size();
+        const size_t total = chunk.size();
         bool writeError = false;
         while (written < total) {
-            size_t w = fwrite(chunk.data() + written, sizeof(short), total - written, stdout);
+            const size_t w = fwrite(chunk.data() + written, sizeof(int16_t), total - written, stdout);
             if (w == 0) {
                 StopWriter();
                 writeError = true;
                 break;
             }
             written += w;
+            g_bytesWritten.fetch_add(w * sizeof(int16_t), std::memory_order_relaxed);
         }
 
         if (writeError) break;
@@ -200,6 +239,28 @@ static bool IsExtensible(const WAVEFORMATEX* wfx) {
            wfx->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
 }
 
+static PcmInputFormat DescribeInputFormat(const WAVEFORMATEX* wfx) {
+    PcmInputFormat fmt{};
+    if (!wfx) return fmt;
+    fmt.channels = wfx->nChannels;
+    fmt.bits_per_sample = wfx->wBitsPerSample;
+
+    if (wfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
+        (IsExtensible(wfx) &&
+         reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wfx)->SubFormat ==
+             KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)) {
+        fmt.tag = PcmFormatTag::kFloat32;
+    } else if (wfx->wFormatTag == WAVE_FORMAT_PCM ||
+               (IsExtensible(wfx) &&
+                reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wfx)->SubFormat ==
+                    KSDATAFORMAT_SUBTYPE_PCM)) {
+        fmt.tag = PcmFormatTag::kPcmInt;
+    } else {
+        fmt.tag = PcmFormatTag::kUnknown;
+    }
+    return fmt;
+}
+
 static void LogFormat(const char* label, const WAVEFORMATEX* wfx) {
     std::string fmt = IsExtensible(wfx)
         ? FmtSubtype(reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wfx)->SubFormat)
@@ -226,98 +287,6 @@ static WAVEFORMATEX* AllocFloat32StereoFormat(DWORD sampleRate) {
     return &wfex->Format;
 }
 
-static inline short ClampFloatToS16(float sample) {
-    if (sample > 1.0f) sample = 1.0f;
-    else if (sample < -1.0f) sample = -1.0f;
-    else if (!(sample >= -1.0f && sample <= 1.0f)) sample = 0.0f; // NaN guard
-    return static_cast<short>(sample * 32767.0f);
-}
-
-// Convert captured buffer (IEEE float32 or PCM 16/24/32-bit, any channel count) to stereo int16.
-// When multichannel audio arrives without WASAPI downmix, mixes center (ch 2) into L and R.
-static void ConvertToStereoS16(const BYTE* pData, UINT32 frames, const WAVEFORMATEX* wfx,
-                               std::vector<short>& out) {
-    WORD nCh = wfx->nChannels;
-    if (nCh == 0 || frames == 0) {
-        out.assign(static_cast<size_t>(frames) * 2, 0);
-        return;
-    }
-
-    bool isFloat = (wfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) ||
-                   (IsExtensible(wfx) &&
-                    reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wfx)->SubFormat ==
-                        KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
-    WORD bits = wfx->wBitsPerSample;
-    constexpr float kCenterGain = 0.7071f;
-
-    out.resize(static_cast<size_t>(frames) * 2);
-    if (isFloat && bits == 32) {
-        const float* p = reinterpret_cast<const float*>(pData);
-        for (UINT32 i = 0; i < frames; ++i) {
-            const float* frame = p + static_cast<size_t>(i) * nCh;
-            float L = frame[0];
-            float R = (nCh > 1) ? frame[1] : frame[0];
-            if (nCh > 2) {
-                float C = frame[2] * kCenterGain;
-                L += C;
-                R += C;
-            }
-            out[static_cast<size_t>(i) * 2]     = ClampFloatToS16(L);
-            out[static_cast<size_t>(i) * 2 + 1] = ClampFloatToS16(R);
-        }
-    } else if (!isFloat && bits == 16) {
-        const int16_t* p = reinterpret_cast<const int16_t*>(pData);
-        for (UINT32 i = 0; i < frames; ++i) {
-            const int16_t* frame = p + static_cast<size_t>(i) * nCh;
-            if (nCh <= 2) {
-                out[static_cast<size_t>(i) * 2]     = frame[0];
-                out[static_cast<size_t>(i) * 2 + 1] = (nCh > 1) ? frame[1] : frame[0];
-            } else {
-                float C = (frame[2] / 32768.0f) * kCenterGain;
-                out[static_cast<size_t>(i) * 2]     = ClampFloatToS16(frame[0] / 32768.0f + C);
-                out[static_cast<size_t>(i) * 2 + 1] = ClampFloatToS16(frame[1] / 32768.0f + C);
-            }
-        }
-    } else if (!isFloat && bits == 24) {
-        const size_t frameBytes = static_cast<size_t>(nCh) * 3;
-        auto read24Norm = [](const BYTE* b) -> float {
-            int32_t v = static_cast<int32_t>(
-                (static_cast<uint32_t>(b[0]) << 8) |
-                (static_cast<uint32_t>(b[1]) << 16) |
-                (static_cast<uint32_t>(b[2]) << 24));
-            return static_cast<float>(v) / 2147483648.0f;
-        };
-        for (UINT32 i = 0; i < frames; ++i) {
-            const BYTE* frame = pData + static_cast<size_t>(i) * frameBytes;
-            float L = read24Norm(frame);
-            float R = (nCh > 1) ? read24Norm(frame + 3) : L;
-            if (nCh > 2) {
-                float C = read24Norm(frame + 6) * kCenterGain;
-                L += C;
-                R += C;
-            }
-            out[static_cast<size_t>(i) * 2]     = ClampFloatToS16(L);
-            out[static_cast<size_t>(i) * 2 + 1] = ClampFloatToS16(R);
-        }
-    } else if (!isFloat && bits == 32) {
-        const int32_t* p = reinterpret_cast<const int32_t*>(pData);
-        for (UINT32 i = 0; i < frames; ++i) {
-            const int32_t* frame = p + static_cast<size_t>(i) * nCh;
-            float L = static_cast<float>(frame[0]) / 2147483648.0f;
-            float R = (nCh > 1) ? static_cast<float>(frame[1]) / 2147483648.0f : L;
-            if (nCh > 2) {
-                float C = (static_cast<float>(frame[2]) / 2147483648.0f) * kCenterGain;
-                L += C;
-                R += C;
-            }
-            out[static_cast<size_t>(i) * 2]     = ClampFloatToS16(L);
-            out[static_cast<size_t>(i) * 2 + 1] = ClampFloatToS16(R);
-        }
-    } else {
-        out.assign(static_cast<size_t>(frames) * 2, 0);
-    }
-}
-
 struct DeviceInfo {
     ComPtr<IMMDevice> device;
     std::string friendlyName; // UTF-8, empty if not found
@@ -332,11 +301,7 @@ static std::string GetDeviceFriendlyName(IMMDevice* pDev) {
     std::string name;
     if (SUCCEEDED(pStore->GetValue(PKEY_Device_FriendlyName, &pv)) &&
         pv.vt == VT_LPWSTR && pv.pwszVal) {
-        int len = WideCharToMultiByte(CP_UTF8, 0, pv.pwszVal, -1, nullptr, 0, nullptr, nullptr);
-        if (len > 1) {
-            name.resize(static_cast<size_t>(len - 1));
-            WideCharToMultiByte(CP_UTF8, 0, pv.pwszVal, -1, &name[0], len, nullptr, nullptr);
-        }
+        name = WideToUtf8(pv.pwszVal);
     }
     PropVariantClear(&pv);
     return name;
@@ -356,7 +321,7 @@ static DeviceInfo ResolveDeviceForPid(IMMDeviceEnumerator* pEnum, DWORD pid) {
 
         LPWSTR rawId = nullptr;
         pDev->GetId(&rawId);
-        std::wstring devIdStr = rawId ? rawId : L"";
+        std::string devIdUtf8 = rawId ? WideToUtf8(rawId) : "";
         if (rawId) CoTaskMemFree(rawId);
 
         ComPtr<IAudioSessionManager2> pMgr;
@@ -383,7 +348,7 @@ static DeviceInfo ResolveDeviceForPid(IMMDeviceEnumerator* pEnum, DWORD pid) {
 
             LOG_DEBUG("endpoint[" << i << "] pid=" << sessionPid
                       << " state=" << state
-                      << " dev=" << std::string(devIdStr.begin(), devIdStr.end()));
+                      << " dev=" << devIdUtf8);
 
             if (sessionPid != pid || state != AudioSessionStateActive) continue;
 
@@ -394,7 +359,7 @@ static DeviceInfo ResolveDeviceForPid(IMMDeviceEnumerator* pEnum, DWORD pid) {
                                          reinterpret_cast<void**>(pTmp.GetAddressOf())))) {
                 pTmp->GetMixFormat(&pFmt);
             }
-            LOG_DEBUG("device id: " << std::string(devIdStr.begin(), devIdStr.end()));
+            LOG_DEBUG("device id: " << devIdUtf8);
             return DeviceInfo{ pDev, name, pFmt };
         }
     }
@@ -427,29 +392,47 @@ static void LogExclusiveModeError(const std::string& friendlyName) {
               << "\"Allow applications to take exclusive control of this device\"");
 }
 
+static bool IsExclusiveModeHr(HRESULT hr) {
+    return hr == AUDCLNT_E_DEVICE_IN_USE || hr == AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
+}
+
+static bool IsRestartableCaptureHr(HRESULT hr) {
+    return hr == AUDCLNT_E_DEVICE_INVALIDATED ||
+           hr == AUDCLNT_E_RESOURCES_INVALIDATED ||
+           hr == AUDCLNT_E_SERVICE_NOT_RUNNING;
+}
+
+static bool IsUnsupportedLoopbackHr(HRESULT hr) {
+    return hr == E_NOTIMPL || hr == REGDB_E_CLASSNOTREG || hr == E_NOINTERFACE;
+}
+
 int main(int argc, char** argv) {
-    DWORD targetPid = 0;
-    DWORD targetSampleRate = 48000;
-
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--pid" && i + 1 < argc) {
-            targetPid = std::stoul(argv[++i]);
-        } else if (arg == "--sample-rate" && i + 1 < argc) {
-            targetSampleRate = std::stoul(argv[++i]);
-        } else if (arg == "--debug") {
-            g_debug = true;
-        }
+    CaptureCliArgs cliArgs;
+    std::string parseError;
+    if (!ParseCaptureArgs(argc, argv, cliArgs, parseError)) {
+        LOG_ERROR(parseError << ". Usage: sessiontape-capture-win.exe --pid <PID> "
+                  "[--sample-rate <RATE>] [--debug] [--no-metrics]");
+        return kExitConfigError;
     }
 
-    if (targetPid == 0) {
-        LOG_ERROR("Usage: sessiontape-capture-win.exe --pid <PID> [--sample-rate <RATE>] [--debug]");
-        return 1;
-    }
+    const DWORD targetPid = cliArgs.pid;
+    const DWORD targetSampleRate = cliArgs.sample_rate;
+    g_debug = cliArgs.debug;
+    const bool emitMetrics = cliArgs.metrics;
 
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
     HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
     if (hStdin == INVALID_HANDLE_VALUE || hStdin == nullptr) hStdin = nullptr;
+
+    // Open a handle to detect immediate target-process exit; tolerate ACCESS_DENIED if elevated.
+    HandleGuard targetProcGuard;
+    targetProcGuard.handle = OpenProcess(
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, targetPid
+    );
+    if (!targetProcGuard.handle && GetLastError() == ERROR_INVALID_PARAMETER) {
+        LOG_ERROR("target process PID " << targetPid << " is not running");
+        return kExitGeneralError;
+    }
 
     _setmode(_fileno(stdout), _O_BINARY);
     setvbuf(stdout, nullptr, _IOFBF, 65536);
@@ -457,7 +440,7 @@ int main(int argc, char** argv) {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
         LOG_ERROR("CoInitializeEx failed: 0x" << std::hex << hr << std::dec);
-        return 1;
+        return kExitGeneralError;
     }
     CoUninitGuard coinitGuard;
 
@@ -466,7 +449,7 @@ int main(int argc, char** argv) {
                           __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(pEnum.GetAddressOf()));
     if (FAILED(hr)) {
         LOG_ERROR("CoCreateInstance(MMDeviceEnumerator) failed: 0x" << std::hex << hr << std::dec);
-        return 1;
+        return kExitGeneralError;
     }
 
     LOG_INFO("probing active audio session for PID " << targetPid);
@@ -477,10 +460,10 @@ int main(int argc, char** argv) {
     std::string friendlyName = devInfo.friendlyName.empty() ? "(unknown)" : devInfo.friendlyName;
     if (devInfo.device && IsEndpointInExclusiveMode(devInfo.device.Get())) {
         LogExclusiveModeError(friendlyName);
-        return 2;
+        return kExitConfigError;
     }
 
-    DWORD tapRate = endpointFmtGuard.ptr ? endpointFmtGuard.ptr->nSamplesPerSec : 0;
+    const DWORD tapRate = endpointFmtGuard.ptr ? endpointFmtGuard.ptr->nSamplesPerSec : 0;
     if (devInfo.device) {
         LOG_INFO("process is rendering to \"" << friendlyName << "\"");
     }
@@ -490,15 +473,15 @@ int main(int argc, char** argv) {
     params.ProcessLoopbackParams.TargetProcessId = targetPid;
     params.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
 
-    PROPVARIANT prop;
+    PROPVARIANT prop = {};
     prop.vt = VT_BLOB;
     prop.blob.cbSize = sizeof(params);
-    prop.blob.pBlobData = (BYTE*)&params;
+    prop.blob.pBlobData = reinterpret_cast<BYTE*>(&params);
 
     auto handler = Make<CActivateAudioInterfaceCompletionHandler>();
     if (handler->m_initFailed) {
         LOG_ERROR("failed to create activation event");
-        return 1;
+        return kExitGeneralError;
     }
     ComPtr<IActivateAudioInterfaceAsyncOperation> asyncOp;
 
@@ -512,18 +495,37 @@ int main(int argc, char** argv) {
     );
 
     if (FAILED(hr)) {
+        if (IsUnsupportedLoopbackHr(hr)) {
+            LOG_ERROR("Windows per-process audio loopback is not supported on this OS build "
+                      "(requires Windows 10 Build 19041+ / Windows 11, hr=0x"
+                      << std::hex << hr << std::dec << ")");
+            return kExitConfigError;
+        }
         LOG_ERROR("ActivateAudioInterfaceAsync failed: 0x" << std::hex << hr << std::dec);
-        return 1;
+        return kExitGeneralError;
     }
 
-    if (WaitForSingleObject(handler->m_hActivateCompleted, INFINITE) != WAIT_OBJECT_0) {
-        LOG_ERROR("WaitForSingleObject failed");
-        return 1;
+    const DWORD waitStatus = WaitForSingleObject(handler->m_hActivateCompleted, ACTIVATION_TIMEOUT_MS);
+    if (waitStatus == WAIT_TIMEOUT) {
+        LOG_ERROR("process loopback activation timed out after " << ACTIVATION_TIMEOUT_MS << " ms");
+        return kExitGeneralError;
+    }
+    if (waitStatus != WAIT_OBJECT_0) {
+        LOG_ERROR("WaitForSingleObject failed: " << GetLastError());
+        return kExitGeneralError;
     }
 
     if (!handler->m_AudioClient) {
-        LOG_ERROR("process loopback activation failed — no IAudioClient");
-        return 1;
+        if (IsUnsupportedLoopbackHr(handler->m_hrActivate)) {
+            LOG_ERROR("Windows per-process audio loopback is not supported on this OS build "
+                      "(requires Windows 10 Build 19041+ / Windows 11, hr=0x"
+                      << std::hex << handler->m_hrActivate << std::dec << ")");
+            return kExitConfigError;
+        }
+        LOG_ERROR("process loopback activation failed (op=0x"
+                  << std::hex << handler->m_hrOperation
+                  << " activate=0x" << handler->m_hrActivate << std::dec << ")");
+        return kExitGeneralError;
     }
 
     ComPtr<IAudioClient> pAudioClient = handler->m_AudioClient;
@@ -534,12 +536,8 @@ int main(int argc, char** argv) {
     captureFmtGuard.reset(AllocFloat32StereoFormat(targetSampleRate));
     if (!captureFmtGuard.ptr) {
         LOG_ERROR("failed to allocate stereo audio format");
-        return 1;
+        return kExitGeneralError;
     }
-
-    auto isExclusiveHr = [](HRESULT code) {
-        return code == AUDCLNT_E_DEVICE_IN_USE || code == AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
-    };
 
     hr = pAudioClient->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
@@ -552,7 +550,7 @@ int main(int argc, char** argv) {
         nullptr
     );
 
-    if (FAILED(hr) && !isExclusiveHr(hr)) {
+    if (FAILED(hr) && !IsExclusiveModeHr(hr)) {
         hr = pAudioClient->Initialize(
             AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_LOOPBACK,
@@ -563,55 +561,74 @@ int main(int argc, char** argv) {
         );
     }
 
-    if (FAILED(hr) && !isExclusiveHr(hr) && endpointFmtGuard.ptr) {
-        if (tapRate != targetSampleRate) {
-            if (hr == AUDCLNT_E_UNSUPPORTED_FORMAT || hr == E_INVALIDARG) {
-                std::cerr << "FORMAT_MISMATCH tap=" << tapRate << " requested=" << targetSampleRate << "\n";
-                LOG_ERROR("sample rate mismatch: device runs at " << tapRate
-                          << " Hz, requested " << targetSampleRate << " Hz (hr=0x"
-                          << std::hex << hr << std::dec << ")");
-                return 3;
-            }
-        } else {
-            hr = pAudioClient->Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK,
-                10000000,
-                0,
-                endpointFmtGuard.ptr,
-                nullptr
-            );
-            if (SUCCEEDED(hr)) {
-                captureFmtGuard.reset(endpointFmtGuard.ptr);
-                endpointFmtGuard.ptr = nullptr;
-            }
+    // If WASAPI rejected targetSampleRate without AUTOCONVERTPCM, initialize directly at the
+    // endpoint's native mix format and notify Python to adopt that sample rate.
+    if (FAILED(hr) && !IsExclusiveModeHr(hr) && endpointFmtGuard.ptr) {
+        const HRESULT fallbackHr = pAudioClient->Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_LOOPBACK,
+            10000000,
+            0,
+            endpointFmtGuard.ptr,
+            nullptr
+        );
+        if (SUCCEEDED(fallbackHr)) {
+            hr = fallbackHr;
+            captureFmtGuard.reset(endpointFmtGuard.ptr);
+            endpointFmtGuard.ptr = nullptr;
+        } else if (tapRate != 0 && tapRate != targetSampleRate &&
+                   (hr == AUDCLNT_E_UNSUPPORTED_FORMAT || hr == E_INVALIDARG)) {
+            std::cerr << "FORMAT_MISMATCH tap=" << tapRate
+                      << " requested=" << targetSampleRate << "\n" << std::flush;
+            LOG_ERROR("sample rate mismatch: device runs at " << tapRate
+                      << " Hz, requested " << targetSampleRate << " Hz (hr=0x"
+                      << std::hex << hr << std::dec << ")");
+            return kExitFormatMismatch;
         }
     }
 
-    if (isExclusiveHr(hr)) {
+    if (IsExclusiveModeHr(hr)) {
         LogExclusiveModeError(friendlyName);
-        return 2;
+        return kExitConfigError;
     }
     if (FAILED(hr)) {
         LOG_ERROR("IAudioClient::Initialize failed: 0x" << std::hex << hr << std::dec);
-        return 1;
+        return kExitGeneralError;
+    }
+
+    const DWORD activeCaptureRate = captureFmtGuard.ptr->nSamplesPerSec;
+    const PcmInputFormat inputFmt = DescribeInputFormat(captureFmtGuard.ptr);
+    if (inputFmt.tag == PcmFormatTag::kUnknown) {
+        LOG_ERROR("unsupported WASAPI sample format (tag=0x"
+                  << std::hex << captureFmtGuard.ptr->wFormatTag << std::dec
+                  << ", bits=" << captureFmtGuard.ptr->wBitsPerSample << ")");
+        return kExitGeneralError;
     }
 
     LogFormat("capture format", captureFmtGuard.ptr);
-    LOG_INFO("capture format: " << captureFmtGuard.ptr->nSamplesPerSec << " Hz "
-             << captureFmtGuard.ptr->nChannels << "ch " << captureFmtGuard.ptr->wBitsPerSample << "-bit");
+    LOG_INFO("capture format: " << activeCaptureRate << " Hz "
+             << captureFmtGuard.ptr->nChannels << "ch "
+             << captureFmtGuard.ptr->wBitsPerSample << "-bit");
 
     ComPtr<IAudioCaptureClient> pCaptureClient;
     hr = pAudioClient->GetService(IID_PPV_ARGS(&pCaptureClient));
     if (FAILED(hr)) {
         LOG_ERROR("GetService(IAudioCaptureClient) failed: 0x" << std::hex << hr << std::dec);
-        return 1;
+        return kExitGeneralError;
     }
 
     hr = pAudioClient->Start();
     if (FAILED(hr)) {
+        if (IsExclusiveModeHr(hr)) {
+            LogExclusiveModeError(friendlyName);
+            return kExitConfigError;
+        }
         LOG_ERROR("IAudioClient::Start failed: 0x" << std::hex << hr << std::dec);
-        return 1;
+        return kExitGeneralError;
+    }
+
+    if (activeCaptureRate != targetSampleRate) {
+        std::cerr << "CAPTURE_FORMAT rate=" << activeCaptureRate << " channels=2\n" << std::flush;
     }
 
     LOG_INFO("capture started");
@@ -619,68 +636,141 @@ int main(int argc, char** argv) {
     std::thread writer(WriterThread);
 
     UINT32 packetLength = 0;
-    std::vector<short> pcmData;
-    std::vector<short> silence;
     UINT64 totalChunks = 0;
+    UINT64 windowCallbacks = 0;
+    UINT64 droppedChunks = 0;
+    UINT64 windowDrops = 0;
+    UINT64 windowDiscontinuities = 0;
     UINT64 silentChunks = 0;
     UINT64 nonZeroSamples = 0;
     UINT64 lastReportedChunks = 0;
-    const UINT64 DEBUG_REPORT_INTERVAL = 100;
+    constexpr UINT64 DEBUG_REPORT_INTERVAL = 100;
+    const ULONGLONG startTick = GetTickCount64();
+    ULONGLONG lastMetricsTick = startTick;
     bool zeroAudioWarnEmitted = false;
+    bool silentStartupWarnEmitted = false;
     bool exclusiveModeExit = false;
+    HRESULT captureErrorHr = S_OK;
 
     while (isRunning) {
         Sleep(20);
 
         if (IsStdinBroken(hStdin)) break;
+        if (targetProcGuard.handle &&
+            WaitForSingleObject(targetProcGuard.handle, 0) == WAIT_OBJECT_0) {
+            LOG_INFO("target process PID " << targetPid << " exited");
+            break;
+        }
 
         hr = pCaptureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr)) {
             LOG_ERROR("GetNextPacketSize failed: 0x" << std::hex << hr << std::dec);
+            captureErrorHr = hr;
             break;
         }
 
         while (packetLength != 0) {
-            BYTE* pData;
-            UINT32 numFramesAvailable;
-            DWORD flags;
+            BYTE* pData = nullptr;
+            UINT32 numFramesAvailable = 0;
+            DWORD flags = 0;
 
             hr = pCaptureClient->GetBuffer(&pData, &numFramesAvailable, &flags, nullptr, nullptr);
-            if (FAILED(hr)) break;
+            if (FAILED(hr)) {
+                LOG_ERROR("GetBuffer failed: 0x" << std::hex << hr << std::dec);
+                captureErrorHr = hr;
+                break;
+            }
 
             totalChunks++;
+            windowCallbacks++;
+            if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) {
+                windowDiscontinuities++;
+            }
+
+            std::vector<int16_t> outChunk;
             if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
                 silentChunks++;
-                silence.assign(numFramesAvailable * 2, 0);
-                {
-                    std::lock_guard<std::mutex> lock(queueMutex);
-                    if (audioQueue.size() >= MAX_QUEUE_CHUNKS) audioQueue.pop();
-                    audioQueue.push(silence);
-                }
+                outChunk.assign(static_cast<size_t>(numFramesAvailable) * 2, 0);
             } else {
-                ConvertToStereoS16(pData, numFramesAvailable, captureFmtGuard.ptr, pcmData);
-                for (short s : pcmData) {
-                    if (s != 0) nonZeroSamples++;
+                nonZeroSamples += ConvertToStereoS16(
+                    pData, numFramesAvailable, inputFmt, outChunk
+                );
+            }
+
+            hr = pCaptureClient->ReleaseBuffer(numFramesAvailable);
+            if (FAILED(hr)) {
+                LOG_ERROR("ReleaseBuffer failed: 0x" << std::hex << hr << std::dec);
+                captureErrorHr = hr;
+                break;
+            }
+
+            if (!outChunk.empty()) {
+                std::lock_guard<std::mutex> lock(queueMutex);
+                if (audioQueue.size() >= MAX_QUEUE_CHUNKS) {
+                    audioQueue.pop();
+                    droppedChunks++;
+                    windowDrops++;
                 }
-                {
-                    std::lock_guard<std::mutex> lock(queueMutex);
-                    if (audioQueue.size() >= MAX_QUEUE_CHUNKS) audioQueue.pop();
-                    audioQueue.push(pcmData);
+                audioQueue.push(std::move(outChunk));
+            }
+            queueCV.notify_one();
+
+            hr = pCaptureClient->GetNextPacketSize(&packetLength);
+            if (FAILED(hr)) {
+                LOG_ERROR("GetNextPacketSize failed: 0x" << std::hex << hr << std::dec);
+                captureErrorHr = hr;
+                break;
+            }
+        }
+
+        if (FAILED(captureErrorHr)) {
+            break;
+        }
+
+        const ULONGLONG nowTick = GetTickCount64();
+        if (emitMetrics && nowTick - lastMetricsTick >= METRICS_INTERVAL_MS) {
+            lastMetricsTick = nowTick;
+            const uint64_t bytesNow = g_bytesWritten.load(std::memory_order_relaxed);
+            LOG_INFO(FormatCaptureMetricsLine(
+                windowDrops, windowCallbacks, bytesNow, windowDiscontinuities
+            ));
+            windowDrops = 0;
+            windowCallbacks = 0;
+            windowDiscontinuities = 0;
+        }
+
+        if (!silentStartupWarnEmitted && nonZeroSamples == 0 &&
+            nowTick - startTick >= SILENT_STARTUP_WARN_MS) {
+            silentStartupWarnEmitted = true;
+            if (!devInfo.device) {
+                DeviceInfo refreshed = ResolveDeviceForPid(pEnum.Get(), targetPid);
+                if (refreshed.mixFmt) CoTaskMemFree(refreshed.mixFmt);
+                if (refreshed.device) {
+                    devInfo.device = refreshed.device;
+                    if (!refreshed.friendlyName.empty()) {
+                        friendlyName = refreshed.friendlyName;
+                    }
                 }
             }
 
-            queueCV.notify_one();
+            if (devInfo.device && IsEndpointInExclusiveMode(devInfo.device.Get())) {
+                LogExclusiveModeError(friendlyName);
+                exclusiveModeExit = true;
+                StopWriter();
+                break;
+            }
 
-            hr = pCaptureClient->ReleaseBuffer(numFramesAvailable);
-            if (FAILED(hr)) break;
-
-            hr = pCaptureClient->GetNextPacketSize(&packetLength);
-            if (FAILED(hr)) break;
+            if (!devInfo.device) {
+                LOG_WARN("no active WASAPI audio session detected for PID " << targetPid
+                         << " after 60s. If Rekordbox is playing through an ASIO driver, "
+                         << "enable 'PC Master Out' in Rekordbox Audio settings or select "
+                         << "a Windows shared-mode output so SessionTape can capture it.");
+            }
         }
 
         if (totalChunks - lastReportedChunks >= DEBUG_REPORT_INTERVAL) {
             lastReportedChunks = totalChunks;
-            UINT64 active = totalChunks - silentChunks;
+            const UINT64 active = totalChunks - silentChunks;
             size_t queueDepth = 0;
             {
                 std::lock_guard<std::mutex> lock(queueMutex);
@@ -689,6 +779,7 @@ int main(int argc, char** argv) {
             LOG_DEBUG("chunks=" << totalChunks
                       << " silent=" << silentChunks
                       << " active=" << active
+                      << " drops=" << droppedChunks
                       << " nonzero_samples=" << nonZeroSamples
                       << " queue=" << queueDepth);
 
@@ -728,5 +819,20 @@ int main(int argc, char** argv) {
 
     pAudioClient->Stop();
 
-    return exclusiveModeExit ? 2 : 0;
+    if (exclusiveModeExit || IsExclusiveModeHr(captureErrorHr)) {
+        if (!exclusiveModeExit) {
+            LogExclusiveModeError(friendlyName);
+        }
+        return kExitConfigError;
+    }
+    if (IsRestartableCaptureHr(captureErrorHr)) {
+        LOG_WARN("WASAPI capture endpoint invalidated or audio service restarted (hr=0x"
+                 << std::hex << captureErrorHr << std::dec
+                 << "); exiting for daemon restart");
+        return kExitDeviceOrStateChanged;
+    }
+    if (FAILED(captureErrorHr)) {
+        return kExitGeneralError;
+    }
+    return 0;
 }

@@ -5,11 +5,13 @@ import Synchronization
 /// userspace lock, so it is safe to call from the real-time CoreAudio IO proc (unlike
 /// `DispatchSemaphore`, whose slow path can touch the allocator and priority-inversion machinery).
 final class MachSemaphore: @unchecked Sendable {
-    private var sem: semaphore_t = 0
+    private let sem: semaphore_t
 
     init() {
-        let result = semaphore_create(mach_task_self_, &sem, SYNC_POLICY_FIFO, 0)
+        var created: semaphore_t = 0
+        let result = semaphore_create(mach_task_self_, &created, SYNC_POLICY_FIFO, 0)
         precondition(result == KERN_SUCCESS, "semaphore_create failed: \(result)")
+        self.sem = created
     }
 
     deinit {
@@ -42,9 +44,11 @@ final class PCMOutboundQueue: @unchecked Sendable {
     /// How long the consumer sleeps before re-checking the ring, so a lost wake-up can never hang it.
     static let waitTimeoutMs = 50
 
-    let capacity: Int
-    private let mask: Int
-    private let buffer: UnsafeMutableRawPointer
+    private var _capacity: Int
+    private var mask: Int
+    private var buffer: UnsafeMutableRawPointer
+
+    var capacity: Int { _capacity }
 
     private let head = Atomic<Int>(0)
     private let tail = Atomic<Int>(0)
@@ -61,16 +65,18 @@ final class PCMOutboundQueue: @unchecked Sendable {
     init(sampleRate: Int = 48_000, channels: Int = 2, bytesPerSample: Int = 2, bufferMs: Int = 2000) {
         let bytesPerSecond = max(1, sampleRate) * max(1, channels) * max(1, bytesPerSample)
         let wanted = (bytesPerSecond * max(1, bufferMs) + 999) / 1000
-        self.capacity = Self.roundedCapacity(wanted)
-        self.mask = capacity - 1
-        self.buffer = .allocate(byteCount: capacity, alignment: 64)
+        let cap = Self.roundedCapacity(wanted)
+        self._capacity = cap
+        self.mask = cap - 1
+        self.buffer = .allocate(byteCount: cap, alignment: 64)
     }
 
     /// Byte-sized initializer, mainly for tests.
     init(capacityBytes: Int) {
-        self.capacity = Self.roundedCapacity(capacityBytes)
-        self.mask = capacity - 1
-        self.buffer = .allocate(byteCount: capacity, alignment: 64)
+        let cap = Self.roundedCapacity(capacityBytes)
+        self._capacity = cap
+        self.mask = cap - 1
+        self.buffer = .allocate(byteCount: cap, alignment: 64)
     }
 
     private static func roundedCapacity(_ bytes: Int) -> Int {
@@ -81,6 +87,20 @@ final class PCMOutboundQueue: @unchecked Sendable {
 
     deinit {
         buffer.deallocate()
+    }
+
+    /// Re-sizes the ring for the tap's actual sample rate. Not RT-safe: call before `start()` / IO starts.
+    func configureCapacity(
+        sampleRate: Int, channels: Int = 2, bytesPerSample: Int = 2, bufferMs: Int = 2000
+    ) {
+        let bytesPerSecond = max(1, sampleRate) * max(1, channels) * max(1, bytesPerSample)
+        let wanted = (bytesPerSecond * max(1, bufferMs) + 999) / 1000
+        let newCapacity = Self.roundedCapacity(wanted)
+        guard newCapacity != _capacity else { return }
+        buffer.deallocate()
+        _capacity = newCapacity
+        mask = newCapacity - 1
+        buffer = .allocate(byteCount: newCapacity, alignment: 64)
     }
 
     var droppedChunks: Int { droppedChunksAtomic.load(ordering: .relaxed) }
@@ -98,7 +118,8 @@ final class PCMOutboundQueue: @unchecked Sendable {
 
         let h = head.load(ordering: .relaxed)
         let t = tail.load(ordering: .acquiring)
-        let freeSpace = capacity - (h - t)
+        let cap = _capacity
+        let freeSpace = cap - (h - t)
 
         guard freeSpace >= byteCount else {
             droppedBytesAtomic.wrappingAdd(byteCount, ordering: .relaxed)
@@ -107,7 +128,7 @@ final class PCMOutboundQueue: @unchecked Sendable {
         }
 
         let writeOffset = h & mask
-        let firstChunk = min(byteCount, capacity - writeOffset)
+        let firstChunk = min(byteCount, cap - writeOffset)
         memcpy(buffer.advanced(by: writeOffset), bytes, firstChunk)
         if firstChunk < byteCount {
             memcpy(buffer, bytes.advanced(by: firstChunk), byteCount - firstChunk)
@@ -139,7 +160,7 @@ final class PCMOutboundQueue: @unchecked Sendable {
             if available > 0 {
                 let toRead = min(available, maxBytes)
                 let readOffset = t & mask
-                let firstChunk = min(toRead, capacity - readOffset)
+                let firstChunk = min(toRead, _capacity - readOffset)
                 memcpy(destination, buffer.advanced(by: readOffset), firstChunk)
                 if firstChunk < toRead {
                     memcpy(destination.advanced(by: firstChunk), buffer, toRead - firstChunk)

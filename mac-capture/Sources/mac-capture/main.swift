@@ -16,6 +16,7 @@ protocol AudioCaptureBackend: AnyObject, Sendable {
     func start() async throws
     func stop() async throws
     func tickMetrics(force: Bool)
+    func checkHealth()
     var isBroken: Bool { get }
 }
 
@@ -23,6 +24,7 @@ extension AudioCaptureBackend {
     func tickMetrics() {
         tickMetrics(force: false)
     }
+    func checkHealth() {}
     var isBroken: Bool {
         false
     }
@@ -128,7 +130,11 @@ final class DiagnosticLogger {
             return
         }
 
-        FileManager.default.createFile(atPath: path, contents: nil)
+        // Append across runs: the reader restarts mac-capture (tap broken, format change, device
+        // switch), and truncating here would erase the log of the run that failed.
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: nil)
+        }
         let handle = FileHandle(forWritingAtPath: path)
         handle?.seekToEndOfFile()
         self.diagnosticHandle = handle
@@ -151,6 +157,10 @@ nonisolated(unsafe) private var diagnosticLogger = DiagnosticLogger(logPath: nil
 
 func logError(_ message: String) {
     diagnosticLogger.log(level: "ERROR", message: message)
+}
+
+func logWarning(_ message: String) {
+    diagnosticLogger.log(level: "WARNING", message: message)
 }
 
 func logInfo(_ message: String) {
@@ -268,6 +278,8 @@ final class FastPCMConverter {
     private var diagnosticBuffersLogged = 0
     /// Callback buffers that did not fit in the scratch and were cut short (lost audio).
     let truncatedBuffers = Atomic<Int>(0)
+    /// Flips true on the first non-zero PCM sample; read off-thread to diagnose silent TCC denial.
+    let seenNonZeroAudio = Atomic<Bool>(false)
 
     init(sampleRate: Int, maxFrames: Int = 16384) {
         self.sampleRate = sampleRate
@@ -322,7 +334,16 @@ final class FastPCMConverter {
         case (.pcmFormatInt16, true, 1):
             let buffer = audioBuffers[0]
             guard let data = buffer.mData else { return true }
-            queue.enqueue(bytes: data, byteCount: Int(buffer.mDataByteSize))
+            let byteCount = Int(buffer.mDataByteSize)
+            if !seenNonZeroAudio.load(ordering: .relaxed) {
+                let samples = data.assumingMemoryBound(to: Int16.self)
+                let count = byteCount / MemoryLayout<Int16>.size
+                for i in 0..<count where samples[i] != 0 {
+                    seenNonZeroAudio.store(true, ordering: .relaxed)
+                    break
+                }
+            }
+            queue.enqueue(bytes: data, byteCount: byteCount)
             return true
         default:
             logDebug(
@@ -332,11 +353,18 @@ final class FastPCMConverter {
         }
     }
 
-    private func clampToInt16(_ sample: Float) -> Int16 {
+    func clampToInt16(_ sample: Float) -> Int16 {
+        guard sample == sample else { return 0 }
         let scaled = sample * 32767.0
-        if scaled > 32767.0 { return 32767 }
-        if scaled < -32768.0 { return -32768 }
+        if scaled >= 32767.0 { return 32767 }
+        if scaled <= -32768.0 { return -32768 }
         return Int16(scaled.rounded())
+    }
+
+    private func markNonZeroIfNeeded(_ hasNonZero: Bool) {
+        if hasNonZero && !seenNonZeroAudio.load(ordering: .relaxed) {
+            seenNonZeroAudio.store(true, ordering: .relaxed)
+        }
     }
 
     func enqueueFloatDeinterleavedStereo(
@@ -352,12 +380,17 @@ final class FastPCMConverter {
         let left = leftData.assumingMemoryBound(to: Float.self)
         let right = rightData.assumingMemoryBound(to: Float.self)
         let sampleCount = stereoFramesThatFit(frames) * 2
+        var hasNonZero = false
 
         for frame in 0..<(sampleCount / 2) {
             let base = frame * 2
-            scratchSamples[base] = clampToInt16(left[frame])
-            scratchSamples[base + 1] = clampToInt16(right[frame])
+            let l = clampToInt16(left[frame])
+            let r = clampToInt16(right[frame])
+            scratchSamples[base] = l
+            scratchSamples[base + 1] = r
+            if l != 0 || r != 0 { hasNonZero = true }
         }
+        markNonZeroIfNeeded(hasNonZero)
 
         queue.enqueue(
             bytes: scratchSamples,
@@ -380,10 +413,14 @@ final class FastPCMConverter {
         guard let data = buffer.mData else { return }
         let input = data.assumingMemoryBound(to: Float.self)
         let sampleCount = stereoFramesThatFit(frames) * 2
+        var hasNonZero = false
 
         for idx in 0..<sampleCount {
-            scratchSamples[idx] = clampToInt16(input[idx])
+            let s = clampToInt16(input[idx])
+            scratchSamples[idx] = s
+            if s != 0 { hasNonZero = true }
         }
+        markNonZeroIfNeeded(hasNonZero)
 
         queue.enqueue(
             bytes: scratchSamples,
@@ -400,12 +437,15 @@ final class FastPCMConverter {
         guard let data = buffer.mData else { return }
         let input = data.assumingMemoryBound(to: Float.self)
         let frameCount = stereoFramesThatFit(frames)
+        var hasNonZero = false
 
         for frame in 0..<frameCount {
             let s = clampToInt16(input[frame])
             scratchSamples[frame * 2] = s
             scratchSamples[frame * 2 + 1] = s
+            if s != 0 { hasNonZero = true }
         }
+        markNonZeroIfNeeded(hasNonZero)
 
         queue.enqueue(
             bytes: scratchSamples,
@@ -725,21 +765,62 @@ func main() async {
     }
     var capture = makeBackend(captureOptions.backend)
 
+    final class ShutdownState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var current: AudioCaptureBackend?
+        private var shuttingDown = false
+
+        func setBackend(_ backend: AudioCaptureBackend) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            current = backend
+            return !shuttingDown
+        }
+
+        func beginShutdown() -> AudioCaptureBackend? {
+            lock.lock()
+            defer { lock.unlock() }
+            shuttingDown = true
+            return current
+        }
+    }
+
+    let shutdownState = ShutdownState()
+    _ = shutdownState.setBackend(capture)
+
+    let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+
+    let shutdown = {
+        logInfo("Received shutdown signal...")
+        let target = shutdownState.beginShutdown()
+        Task {
+            try? await target?.stop()
+            exit(0)
+        }
+    }
+
+    sigintSource.setEventHandler(handler: shutdown)
+    sigtermSource.setEventHandler(handler: shutdown)
+
+    signal(SIGINT, SIG_IGN)
+    signal(SIGTERM, SIG_IGN)
+
+    sigintSource.resume()
+    sigtermSource.resume()
+
     do {
         do {
             try await capture.start()
-        } catch let mismatch as TapFormatMismatch {
-            // Contract with the reader: exact line on stderr, exit status 3.
-            fputs(
-                "FORMAT_MISMATCH tap=\(mismatch.tapRate) requested=\(mismatch.requestedRate)\n",
-                stderr)
-            exit(3)
         } catch {
             if captureOptions.backend == .auto && !(capture is AppAudioCapture) {
                 logError(
                     "CoreAudio tap failed to start: \(captureErrorDescription(error)). Falling back to ScreenCaptureKit..."
                 )
                 let fallback = makeBackend(.sck)
+                guard shutdownState.setBackend(fallback) else {
+                    exit(0)
+                }
                 try await fallback.start()
                 capture = fallback
             } else {
@@ -748,25 +829,10 @@ func main() async {
         }
 
         let activeCapture = capture
-        let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-
-        let shutdown = {
-            logInfo("Received shutdown signal...")
-            Task {
-                try? await activeCapture.stop()
-                exit(0)
-            }
+        guard shutdownState.setBackend(activeCapture) else {
+            try? await activeCapture.stop()
+            exit(0)
         }
-
-        sigintSource.setEventHandler(handler: shutdown)
-        sigtermSource.setEventHandler(handler: shutdown)
-
-        signal(SIGINT, SIG_IGN)
-        signal(SIGTERM, SIG_IGN)
-
-        sigintSource.resume()
-        sigtermSource.resume()
 
         while true {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -775,6 +841,7 @@ func main() async {
                 try? await activeCapture.stop()
                 exit(0)
             }
+            activeCapture.checkHealth()
             activeCapture.tickMetrics()
         }
     } catch {

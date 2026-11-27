@@ -24,6 +24,11 @@ class TestPerfMetrics(unittest.TestCase):
         self.assertEqual(parsed["drops"], 0)
         self.assertEqual(parsed["cb_max"], 1.20)
 
+    def test_parse_capture_line_ignores_malformed_or_non_finite_tokens(self):
+        parsed = parse_capture_line("CAPTURE drops=2 mode=tap cb_max=nan proc_max=inf cb=12")
+        self.assertEqual(parsed, {"drops": 2, "cb": 12})
+        self.assertIsNone(parse_capture_line("CAPTURE mode=tap status=bad"))
+
     def test_format_capture_line_order(self):
         line = format_capture_line(
             drops=1,
@@ -134,6 +139,38 @@ class TestPerfMetrics(unittest.TestCase):
         self.assertTrue(flt.filter(cap_rec))
         self.assertTrue(flt.filter(plain_rec))
         self.assertFalse(flt.filter(plain_rec))
+
+    def test_dedup_filter_thread_safe_under_pruning(self):
+        import logging
+        import threading
+        from src.__main__ import _DedupFilter
+
+        flt = _DedupFilter(window=0.001)
+        errors: list[BaseException] = []
+
+        def worker(tid: int) -> None:
+            try:
+                for i in range(250):
+                    rec = logging.LogRecord(
+                        name="sessiontape",
+                        level=logging.INFO,
+                        pathname="",
+                        lineno=0,
+                        msg=f"thread={tid} item={i}",
+                        args=(),
+                        exc_info=None,
+                    )
+                    flt.filter(rec)
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
 
     def test_benchmark_recorder_core_smoke(self):
         report = benchmark_recorder_core(chunk_size=1920, iterations=200)

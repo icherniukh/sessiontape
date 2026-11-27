@@ -129,14 +129,14 @@ final class CaptureMetrics: @unchecked Sendable {
         let p99Ms = Self.p99Ms(bucketCounts: counts, totalCallbacks: totalCallbacks, maxMs: maxMs)
 
         let line = String(
-            format: "CAPTURE drops=%d cb_max=%.2f cb_p99=%.2f slow=%d fb=%d cb=%d bytes=%d",
+            format: "CAPTURE drops=%d cb_max=%.2f cb_p99=%.2f slow=%d fb=%d cb=%d bytes=%lld",
             drops,
             maxMs,
             p99Ms,
             slow,
             fallback,
             totalCallbacks,
-            bytesWritten
+            Int64(bytesWritten)
         )
         emit(line)
     }
