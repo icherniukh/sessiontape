@@ -3,6 +3,7 @@ import subprocess
 from dataclasses import dataclass
 
 from src.backends.base import CaptureBackend
+from src.log_retention import prune_logs, rotate_if_stale
 from src.recorder_core import _find_executable
 
 log = logging.getLogger("sessiontape")
@@ -35,6 +36,12 @@ class MacCaptureBackend(CaptureBackend):
         self._options = options or MacCaptureOptions()
 
     def start(self, pid: int, sample_rate: int) -> subprocess.Popen:
+        if self._options.log_path:
+            try:
+                rotate_if_stale(self._options.log_path)
+                prune_logs(self._options.log_path)
+            except OSError as exc:
+                log.warning(f"mac-capture log rotation failed: {exc}")
         cmd = [
             _find_executable("mac-capture"),
             str(pid),

@@ -3,10 +3,13 @@ import logging
 import logging.handlers
 import os
 import queue
+import sys
+import threading
 import time
 
 from src.config import Config, resolve_config_path
 from src.daemon import RecorderDaemon
+from src.log_retention import daily_file_handler, prune_logs
 
 
 class _DedupFilter(logging.Filter):
@@ -16,6 +19,7 @@ class _DedupFilter(logging.Filter):
         super().__init__()
         self._window = window
         self._seen: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
@@ -23,17 +27,38 @@ class _DedupFilter(logging.Filter):
             return True
         key = f"{record.name}:{record.levelno}:{message}"
         now = time.monotonic()
-        last = self._seen.get(key)
-        if last is not None and now - last < self._window:
-            return False
-        self._seen[key] = now
-        if len(self._seen) > 500:
-            cutoff = now - self._window
-            self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
+        with self._lock:
+            last = self._seen.get(key)
+            if last is not None and now - last < self._window:
+                return False
+            self._seen[key] = now
             if len(self._seen) > 500:
-                sorted_items = sorted(self._seen.items(), key=lambda x: x[1])
-                self._seen = dict(sorted_items[-500:])
-        return True
+                cutoff = now - self._window
+                self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
+                if len(self._seen) > 500:
+                    sorted_items = sorted(self._seen.items(), key=lambda x: x[1])
+                    self._seen = dict(sorted_items[-500:])
+            return True
+
+
+def build_log_handlers(
+    log_file: str, fmt: logging.Formatter, stderr=None
+) -> list[logging.Handler]:
+    """daemon.log (daily files, RETENTION_DAYS kept), plus the console when it is a terminal.
+
+    Under launchd (brew services) stderr is a file nothing rotates; daemon.log already has every
+    line, so the console mirror is skipped there.
+    """
+    stderr = sys.stderr if stderr is None else stderr
+    prune_logs(log_file)
+    file_handler = daily_file_handler(log_file)
+    file_handler.setFormatter(fmt)
+    handlers: list[logging.Handler] = [file_handler]
+    if stderr is not None and stderr.isatty():
+        stream_handler = logging.StreamHandler(stderr)
+        stream_handler.setFormatter(fmt)
+        handlers.append(stream_handler)
+    return handlers
 
 
 def main():
@@ -53,11 +78,7 @@ def main():
     level = logging.DEBUG if args.verbose else logging.INFO
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setFormatter(fmt)
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(fmt)
+    handlers = build_log_handlers(log_file, fmt)
 
     log_queue: queue.Queue = queue.Queue()
     queue_handler = logging.handlers.QueueHandler(log_queue)
@@ -67,7 +88,7 @@ def main():
 
     # Background thread handles file and console I/O so audio reader threads never block on logging.
     listener = logging.handlers.QueueListener(
-        log_queue, file_handler, stream_handler, respect_handler_level=True
+        log_queue, *handlers, respect_handler_level=True
     )
 
     try:
