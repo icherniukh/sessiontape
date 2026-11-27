@@ -21,10 +21,15 @@ class FakeAudioteeBackend:
     def start(self, pid: int, sample_rate: int):
         import subprocess as _sp
 
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(_sp, "CREATE_NO_WINDOW", 0x08000000)
+
         return _sp.Popen(
             [sys.executable, FAKE_AUDIOTEE, "--include-processes", str(pid), "--sample-rate", str(sample_rate)],
             stdout=_sp.PIPE,
             stderr=_sp.PIPE,
+            **kwargs,
         )
 
     def stop(self, proc):

@@ -28,6 +28,12 @@ def ffprobe_audio_stream(path: str) -> dict:
     if not ffprobe:
         raise unittest.SkipTest("ffprobe is required for MP3 validity checks")
 
+    import sys
+
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
     output = subprocess.check_output(
         [
             ffprobe,
@@ -42,6 +48,7 @@ def ffprobe_audio_stream(path: str) -> dict:
             path,
         ],
         text=True,
+        **kwargs,
     )
     streams = json.loads(output)["streams"]
     if not streams:
@@ -128,11 +135,11 @@ class TestPCMStreamRecorder(unittest.TestCase):
             raw_path = os.path.join(tmpdir, "segment.raw")
             output_path = os.path.join(tmpdir, "segment.mp3")
 
-            with open(config_path, "w") as config_file:
+            with open(config_path, "w", encoding="utf-8") as config_file:
                 config_file.write(
                     "[recording]\n"
                     "sample_rate = 44100\n"
-                    f'output_dir = "{tmpdir}"\n'
+                    f"output_dir = {json.dumps(tmpdir)}\n"
                     'export_format = "mp3"\n'
                 )
 
@@ -476,6 +483,49 @@ class TestPCMStreamRecorder(unittest.TestCase):
                     os.path.abspath(_find_executable("mac-capture")),
                     os.path.abspath(expected),
                 )
+
+    def test_find_executable_checks_windows_package_manager_fallbacks(self):
+        from src.recorder_core import _find_executable
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            winget_links = os.path.join(tmpdir, "Microsoft", "WinGet", "Links")
+            os.makedirs(winget_links, exist_ok=True)
+            ffmpeg_exe = os.path.join(winget_links, "ffmpeg.exe")
+            with open(ffmpeg_exe, "wb") as f:
+                f.write(b"")
+
+            with (
+                patch("src.recorder_core.sys.platform", "win32"),
+                patch("src.recorder_core.shutil.which", return_value=None),
+                patch.dict(
+                    "src.recorder_core.os.environ",
+                    {"LOCALAPPDATA": tmpdir, "USERPROFILE": tmpdir, "ProgramData": tmpdir},
+                    clear=False,
+                ),
+            ):
+                self.assertEqual(_find_executable("ffmpeg"), ffmpeg_exe)
+
+    def test_recover_orphaned_raw_files_handles_brackets_in_directory_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bracket_dir = os.path.join(tmpdir, "DJ [Live Set]")
+            os.makedirs(bracket_dir, exist_ok=True)
+            raw_path = os.path.join(
+                bracket_dir, ".rb_session_20261127_020000_000001_48000hz.raw"
+            )
+            write_sine_raw(raw_path, sample_rate=48000, seconds=0.1)
+            old_mtime = 1_700_000_000
+            os.utime(raw_path, (old_mtime, old_mtime))
+
+            recover_orphaned_raw_files(
+                output_dir=bracket_dir,
+                sample_rate=48000,
+                export_format="wav",
+            )
+
+            expected_out = os.path.join(
+                bracket_dir, "rb_session_20261127_020000_000001.wav"
+            )
+            self.assertTrue(os.path.exists(expected_out))
 
 
 if __name__ == "__main__":

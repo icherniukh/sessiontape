@@ -48,22 +48,30 @@ RESTART_WINDOW_SECONDS = 600.0
 _STALE_PROCESS_NAMES = {
     "mac-capture",
     "sessiontape",
+    "sessiontape.exe",
     "sessiontape-capture-win",
     "sessiontape-capture-win.exe",
 }
 
 
 def _cleanup_stale_processes() -> None:
-    """Kill any leftover mac-capture or sessiontape processes from a previous run."""
+    """Kill any leftover capture or sessiontape processes from a previous run."""
     current_pid = os.getpid()
     own_pids = {current_pid, os.getppid()}
+    try:
+        for ancestor in psutil.Process(current_pid).parents():
+            own_pids.add(ancestor.pid)
+    except (psutil.Error, OSError, SystemError):
+        pass
+
     for proc in psutil.process_iter():
         try:
             cached_info = getattr(proc, "info", None)
             info = cached_info if cached_info is not None else proc.as_dict(attrs=["pid", "name"])
-            if info.get("name") in _STALE_PROCESS_NAMES and proc.pid not in own_pids:
+            raw_name = info.get("name") or ""
+            if raw_name.lower() in _STALE_PROCESS_NAMES and proc.pid not in own_pids:
                 log.warning(
-                    f"Killing stale process: {info['name']} PID {proc.pid}"
+                    f"Killing stale process: {raw_name} PID {proc.pid}"
                 )
                 proc.kill()
         except (psutil.Error, OSError, SystemError):

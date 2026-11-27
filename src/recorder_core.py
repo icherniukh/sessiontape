@@ -60,6 +60,19 @@ def _find_executable(name: str) -> str:
     path = shutil.which(name)
     if path:
         return path
+    if sys.platform == "win32":
+        exe_name = name if name.lower().endswith(".exe") else f"{name}.exe"
+        win_dirs = [
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links"),
+            os.path.join(os.environ.get("USERPROFILE", ""), "scoop", "shims"),
+            os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "chocolatey", "bin"),
+        ]
+        for directory in win_dirs:
+            if directory:
+                candidate = os.path.join(directory, exe_name)
+                if os.path.isfile(candidate):
+                    return candidate
+        return name
     # macOS LaunchAgents often lack standard interactive PATHs
     for fallback in [
         f"/opt/homebrew/bin/{name}",
@@ -459,9 +472,10 @@ def recover_orphaned_raw_files(
         return
 
     # Match both hidden (.rb_session...) and visible just in case
+    escaped_dir = glob.escape(output_dir)
     patterns = [
-        os.path.join(output_dir, ".rb_session_*.raw"),
-        os.path.join(output_dir, "*.raw"),
+        os.path.join(escaped_dir, ".rb_session_*.raw"),
+        os.path.join(escaped_dir, "*.raw"),
     ]
     raw_files = set()
     for p in patterns:

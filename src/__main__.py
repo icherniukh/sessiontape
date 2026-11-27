@@ -61,47 +61,80 @@ def build_log_handlers(
     return handlers
 
 
+def _ensure_std_streams() -> list:
+    """Ensure sys.stdout/sys.stderr are writable in windowed (console=False) builds."""
+    opened = []
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        opened.append(sys.stdout)
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+        opened.append(sys.stderr)
+    return opened
+
+
 def main():
-    parser = argparse.ArgumentParser(description="SessionTape")
-    parser.add_argument(
-        "-c", "--config",
-        help="Path to config file",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
-    args = parser.parse_args()
-
-    config_path = resolve_config_path(args.config)
-    log_dir = os.path.dirname(config_path)
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "daemon.log")
-
-    level = logging.DEBUG if args.verbose else logging.INFO
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
-
-    handlers = build_log_handlers(log_file, fmt)
-
-    log_queue: queue.Queue = queue.Queue()
-    queue_handler = logging.handlers.QueueHandler(log_queue)
-    queue_handler.addFilter(_DedupFilter())
-
-    logging.basicConfig(level=level, handlers=[queue_handler])
-
-    # Background thread handles file and console I/O so audio reader threads never block on logging.
-    listener = logging.handlers.QueueListener(
-        log_queue, *handlers, respect_handler_level=True
-    )
-
+    raw_stderr = sys.stderr
+    devnull_streams = _ensure_std_streams()
     try:
-        listener.start()
-        if os.path.exists(config_path):
-            config = Config.from_file(config_path)
-        else:
-            config = Config()
+        parser = argparse.ArgumentParser(description="SessionTape")
+        parser.add_argument(
+            "-c", "--config",
+            help="Path to config file",
+        )
+        parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
+        args = parser.parse_args()
 
-        daemon = RecorderDaemon(config)
-        daemon.run()
+        config_path = resolve_config_path(args.config)
+        log_dir = os.path.dirname(config_path)
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, "daemon.log")
+
+        level = logging.DEBUG if args.verbose else logging.INFO
+        fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+
+        handlers = build_log_handlers(log_file, fmt, stderr=raw_stderr)
+
+        log_queue: queue.Queue = queue.Queue()
+        queue_handler = logging.handlers.QueueHandler(log_queue)
+        queue_handler.addFilter(_DedupFilter())
+
+        root_logger = logging.getLogger()
+        prev_level = root_logger.level
+        root_logger.setLevel(level)
+        root_logger.addHandler(queue_handler)
+
+        # Background thread handles file and console I/O so audio reader threads never block on logging.
+        listener = logging.handlers.QueueListener(
+            log_queue, *handlers, respect_handler_level=True
+        )
+
+        try:
+            listener.start()
+            try:
+                if os.path.exists(config_path):
+                    config = Config.from_file(config_path)
+                else:
+                    config = Config()
+            except (ValueError, OSError) as exc:
+                logging.getLogger("sessiontape").critical(
+                    "Failed to load configuration from %s: %s", config_path, exc
+                )
+                raise SystemExit(2) from exc
+
+            daemon = RecorderDaemon(config)
+            daemon.run()
+        finally:
+            try:
+                listener.stop()
+            finally:
+                root_logger.removeHandler(queue_handler)
+                root_logger.setLevel(prev_level)
+                for handler in handlers:
+                    handler.close()
     finally:
-        listener.stop()
+        for stream in devnull_streams:
+            stream.close()
 
 
 if __name__ == "__main__":

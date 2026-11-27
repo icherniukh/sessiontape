@@ -19,6 +19,7 @@ capture_log = logging.getLogger("sessiontape.capture")
 
 _FORMAT_MISMATCH_RE = re.compile(r"FORMAT_MISMATCH tap=(\d+)")
 _TAP_FORMAT_RE = re.compile(r"TAP_FORMAT rate=(\d+)")
+_CAPTURE_FORMAT_RE = re.compile(r"CAPTURE_FORMAT rate=(\d+)")
 
 # Seconds without PCM bytes on an active continuous tap stream before forcing a restart.
 TAP_STALL_TIMEOUT_S = 10.0
@@ -208,6 +209,17 @@ class AudioCapture:
                     )
                     self.active_sample_rate = tap_rate
                     self.recorder.set_sample_rate(tap_rate)
+                continue
+            cap_fmt = _CAPTURE_FORMAT_RE.search(decoded)
+            if cap_fmt:
+                cap_rate = int(cap_fmt.group(1))
+                if cap_rate != self.active_sample_rate:
+                    log.info(
+                        f"Adopting native capture sample rate {cap_rate} Hz "
+                        f"(configured {self.sample_rate} Hz)"
+                    )
+                    self.active_sample_rate = cap_rate
+                    self.recorder.set_sample_rate(cap_rate)
                 continue
             if self._ingest_native_metric(decoded):  # parse_capture_line strips "INFO: " itself
                 continue

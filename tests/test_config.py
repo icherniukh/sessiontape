@@ -52,9 +52,12 @@ class TestConfig(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
             f.write(toml_content)
             f.flush()
-            cfg = Config.from_file(f.name)
+            path = f.name
 
-        os.unlink(f.name)
+        try:
+            cfg = Config.from_file(path)
+        finally:
+            os.unlink(path)
         self.assertEqual(cfg.sample_rate, 44100)
         self.assertEqual(cfg.capture_backend, "mac-capture")
         self.assertEqual(cfg.output_dir, "/tmp/my_sets")
@@ -73,9 +76,12 @@ class TestConfig(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
             f.write(toml_content)
             f.flush()
-            cfg = Config.from_file(f.name)
+            path = f.name
 
-        os.unlink(f.name)
+        try:
+            cfg = Config.from_file(path)
+        finally:
+            os.unlink(path)
         self.assertFalse(cfg.perf_metrics)
         self.assertFalse(cfg.mac_capture_metrics)
         self.assertTrue(cfg.mac_capture_diag)

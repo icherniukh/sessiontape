@@ -33,7 +33,10 @@ def run_mac_capture_benchmark() -> dict | None:
     if binary is None:
         return None
 
-    output = subprocess.check_output([str(binary)], text=True).strip()
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    output = subprocess.check_output([str(binary)], text=True, **kwargs).strip()
     return json.loads(output)
 
 

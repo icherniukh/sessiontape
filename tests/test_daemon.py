@@ -1,4 +1,5 @@
 import queue
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -29,30 +30,31 @@ class TestRecorderDaemon(unittest.TestCase):
     def test_start_recording_on_process_detected(
         self, MockRecover, MockMonitor, MockCapture, mock_get_backend
     ):
-        cfg = Config(output_dir="/tmp/test_output", mac_capture_diag=True)
-        daemon = RecorderDaemon(cfg)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = Config(output_dir=tmpdir, mac_capture_diag=True)
+            daemon = RecorderDaemon(cfg)
 
-        daemon._start_capture(pid=12345)
+            daemon._start_capture(pid=12345)
 
-        mock_get_backend.assert_called_once_with(
-            "auto", mac_options=MacCaptureOptions(diag=True)
-        )
+            mock_get_backend.assert_called_once_with(
+                "auto", mac_options=MacCaptureOptions(diag=True)
+            )
 
-        MockCapture.assert_called_once_with(
-            pid=12345,
-            output_dir="/tmp/test_output",
-            queue=daemon._queue,
-            sample_rate=48000,
-            backend=mock_get_backend.return_value,
-            silence_threshold_db=-50,
-            min_silence_duration=15,
-            min_segment_duration=30,
-            decay_tail=5,
-            export_format="wav",
-            export_manager=daemon._export_manager,
-            perf_metrics=True,
-        )
-        MockCapture.return_value.start.assert_called_once()
+            MockCapture.assert_called_once_with(
+                pid=12345,
+                output_dir=tmpdir,
+                queue=daemon._queue,
+                sample_rate=48000,
+                backend=mock_get_backend.return_value,
+                silence_threshold_db=-50,
+                min_silence_duration=15,
+                min_segment_duration=30,
+                decay_tail=5,
+                export_format="wav",
+                export_manager=daemon._export_manager,
+                perf_metrics=True,
+            )
+            MockCapture.return_value.start.assert_called_once()
 
     @patch("src.daemon.os.path.exists", return_value=True)
     @patch("src.daemon.AudioCapture")
@@ -379,3 +381,65 @@ class TestFormatMismatch(unittest.TestCase):
         self.assertEqual(daemon._start_capture.call_count, 1)
         self.assertEqual(daemon._restart_count, 0)
         self.assertTrue(any("configuration error" in line for line in logs.output))
+
+    @patch("src.daemon.psutil.process_iter")
+    @patch("src.daemon.psutil.Process")
+    @patch("src.daemon.os.getpid", return_value=2000)
+    @patch("src.daemon.os.getppid", return_value=1999)
+    def test_cleanup_stale_processes_kills_windows_exe_and_spares_ancestors(
+        self, mock_getppid, mock_getpid, mock_process_cls, mock_process_iter
+    ):
+        from src.daemon import _cleanup_stale_processes
+
+        grandparent = MagicMock(pid=1500)
+        mock_process_cls.return_value.parents.return_value = [
+            MagicMock(pid=1999),
+            grandparent,
+        ]
+
+        stale_win = MagicMock(pid=888, info={"pid": 888, "name": "SessionTape.exe"})
+        stale_cap = MagicMock(
+            pid=889, info={"pid": 889, "name": "sessiontape-capture-win.exe"}
+        )
+        own_bootloader = MagicMock(
+            pid=1500, info={"pid": 1500, "name": "sessiontape.exe"}
+        )
+        other_app = MagicMock(pid=900, info={"pid": 900, "name": "rekordbox.exe"})
+        mock_process_iter.return_value = [
+            stale_win,
+            stale_cap,
+            own_bootloader,
+            other_app,
+        ]
+
+        _cleanup_stale_processes()
+
+        stale_win.kill.assert_called_once()
+        stale_cap.kill.assert_called_once()
+        own_bootloader.kill.assert_not_called()
+        other_app.kill.assert_not_called()
+
+    def test_main_handles_none_stdio_and_logs_invalid_config(self):
+        import os
+        import sys
+        from src.__main__ import main
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad_cfg = os.path.join(tmpdir, "config.toml")
+            with open(bad_cfg, "w", encoding="utf-8") as f:
+                f.write("[recording]\nsample_rate = 12345\n")
+
+            with (
+                patch.object(sys, "argv", ["sessiontape", "-c", bad_cfg]),
+                patch.object(sys, "stdout", None),
+                patch.object(sys, "stderr", None),
+            ):
+                with self.assertRaises(SystemExit) as ctx:
+                    main()
+                self.assertEqual(ctx.exception.code, 2)
+
+            log_path = os.path.join(tmpdir, "daemon.log")
+            self.assertTrue(os.path.exists(log_path))
+            with open(log_path, encoding="utf-8") as lf:
+                contents = lf.read()
+            self.assertIn("Failed to load configuration", contents)
