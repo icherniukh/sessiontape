@@ -6,6 +6,7 @@ import sys
 
 codesign_id = os.environ.get("CODESIGN_IDENTITY") or None
 entitlements = "entitlements.plist" if (sys.platform == "darwin" and codesign_id) else None
+win_version_file = "windows-version-info.txt" if sys.platform == "win32" else None
 
 if sys.platform == 'win32':
     binaries = [('windows-capture\\sessiontape-capture-win.exe', '.')]
@@ -60,4 +61,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=codesign_id,
     entitlements_file=entitlements,
+    version=win_version_file,
 )

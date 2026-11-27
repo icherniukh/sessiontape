@@ -21,7 +21,9 @@ Open PowerShell and paste this command to download and run the installer directl
 $msi = "$env:TEMP\sessiontape.msi"; Invoke-WebRequest -Uri "https://github.com/icherniukh/sessiontape/releases/latest/download/sessiontape.msi" -OutFile $msi; if ($?) { Start-Process msiexec.exe -ArgumentList '/i', $msi, '/qn', '/norestart' -Wait }
 ```
 
-The installer places the application in `%LOCALAPPDATA%\Programs\SessionTape` and the config in `%APPDATA%\sessiontape\config.toml`. It registers a Scheduled Task so it runs automatically at login.
+The installer places the application in `%LOCALAPPDATA%\Programs\SessionTape`, adds that folder to your user `PATH`, and creates `%APPDATA%\sessiontape\config.toml`. It registers a Scheduled Task so SessionTape runs automatically at login and logs to `%APPDATA%\sessiontape\daemon.log`.
+
+> **ASIO note (Windows):** WASAPI process loopback only hears audio routed through the Windows audio engine. If Rekordbox outputs exclusively through an ASIO driver (e.g. Pioneer DJ DJM/DDJ ASIO), enable **PC Master Out** in Rekordbox `Preferences > Audio` so audio is mirrored to a Windows shared-mode device.
 
 You can also run it manually from the command line:
 

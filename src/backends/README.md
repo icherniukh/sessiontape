@@ -4,37 +4,22 @@ This directory contains the platform-specific audio capture backends for `sessio
 
 ## Architecture
 
-The recorder relies on a platform-neutral core (`PCMStreamRecorder`) and delegates the actual raw PCM audio acquisition to platform-specific backends.
+The recorder relies on a platform-neutral core (`PCMStreamRecorder`) and delegates raw PCM audio acquisition to platform-specific backends:
 
 * `base.py`: Defines the `CaptureBackend` protocol.
-* `macos_capture.py`: macOS backend using `mac-capture` (native Swift CoreAudio process tap).
-* `windows_capture.py`: Windows backend utilizing `sessiontape-capture-win.exe` (a native Windows WASAPI loopback capture binary) via a subprocess.
+* `macos_capture.py`: macOS backend invoking `mac-capture` (native Swift CoreAudio process tap with ScreenCaptureKit fallback).
+* `windows_capture.py`: Windows backend invoking `sessiontape-capture-win.exe` (native C++ WASAPI process loopback capture) via a subprocess.
 
 ## Windows Design Notes
 
-The Windows implementation avoids doing heavy Windows COM/WASAPI audio API calls directly in Python to maintain low overhead in the hot path. Instead, it relies on a small native capture executable `sessiontape-capture-win.exe` which performs process-level loopback capture and streams raw PCM (s16le) to stdout.
+The Windows implementation avoids COM/WASAPI audio API calls directly in Python to keep hot-path overhead minimal. `sessiontape-capture-win.exe` performs per-process WASAPI loopback capture (`PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`), converts frames to stereo `s16le`, streams raw PCM to `stdout`, and emits structured diagnostics and `CAPTURE` metrics on `stderr`.
 
-Python remains responsible for orchestration, silence detection, ring buffering, and export.
+Python handles process monitoring, silence detection, decay-tail ring buffering, `.raw` segment writing, and WAV/MP3 export.
 
-## Testing on Windows
+## Collecting Debug Logs on Windows
 
-To test the Windows capture backend:
-
-1. **Build the executable**: 
-   Run `scripts/build-windows.ps1` to compile the Windows standalone executable. This will bundle the main Python script and its dependencies.
-2. **Ensure the Native Capture Binary is present**:
-   The `sessiontape-capture-win.exe` needs to be in the same directory or accessible via PATH.
-3. **Run the recorder**:
-   You can run the built executable from `dist\sessiontape.exe` or run the python script directly.
-
-### Collecting Debug Logs
-
-To troubleshoot issues with the Windows capture backend, you can collect debug logs:
-
-1. Run the script or the built executable with the environment variable `LOG_LEVEL=DEBUG` or standard logging configured.
+1. Enable verbose daemon logging with `-v` or set `mac_capture_diag = true` under `[capture]` in `%APPDATA%\sessiontape\config.toml` (which passes `--debug` to `sessiontape-capture-win.exe`):
    ```powershell
-   $env:LOG_LEVEL="DEBUG"
-   .\dist\sessiontape.exe
+   sessiontape -v
    ```
-2. **Native Capture Binary Logs**: `sessiontape-capture-win.exe` writes errors or diagnostic information to `stderr`. The current `WindowsCaptureBackend` suppresses `stderr` by default (`stderr=subprocess.DEVNULL`). To capture native process logs during active debugging, modify `src/backends/windows_capture.py` locally to remove `stderr=subprocess.DEVNULL` so the executable's output reaches the main console.
-3. Ensure Rekordbox is running and check the Python console output to confirm transitions between `PASSIVE` and `ACTIVE` states based on the RMS levels.
+2. Inspect `%APPDATA%\sessiontape\daemon.log`. Native `sessiontape-capture-win.exe` `stderr` lines (`INFO:`, `WARNING:`, `ERROR:`, `DEBUG:`, and `CAPTURE` metrics) are routed automatically into `daemon.log`.

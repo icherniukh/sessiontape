@@ -4,7 +4,7 @@
 
 - **Full lifecycle with music + silence gap** — the splitter works on synthetic audio, but a real test with play→silence→play→quit hasn't been completed clean yet (Rekordbox startup cycle caused short captures in testing).
 - **Long session stability** — not tested with multi-hour DJ sets. Disk space usage is ~184KB/s (660MB/hour).
-- **Terminal popups during tests** — Even with `CREATE_NO_WINDOW` flags, the test suite occasionally spawns empty terminal windows on Windows. Tracked in [Issue #21](https://github.com/icherniukh/sessiontape/issues/21).
+- **Terminal popups during tests** — All `subprocess` calls in `src/`, `tests/`, and `scripts/` now pass `CREATE_NO_WINDOW` on `win32`; confirm in live interactive Windows test runs before closing [Issue #21](https://github.com/icherniukh/sessiontape/issues/21).
 - **Permissions UX** — On macOS, **System Audio Recording** (`System Settings > Privacy & Security > Audio & Video Recording`, for the default CoreAudio tap) and **Screen Recording** (for the `--sck` ScreenCaptureKit fallback) must be granted manually. CoreAudio taps return `noErr` and deliver `0.0f` silence when System Audio Recording is denied (`mac-capture` logs a warning after 60 s of continuous zeros). No guided setup flow yet.
 
 ## Runtime Service, Releases & Git Workflow

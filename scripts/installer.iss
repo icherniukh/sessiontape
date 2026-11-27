@@ -1,5 +1,6 @@
 [Setup]
 AppName=SessionTape
+AppPublisher=Ivan Cherniukh
 #ifndef AppVersion
   #define AppVersion "dev"
 #endif
@@ -8,6 +9,7 @@ DefaultDirName={localappdata}\Programs\SessionTape
 DefaultGroupName=SessionTape
 UninstallDisplayIcon={app}\sessiontape.exe
 PrivilegesRequired=lowest
+ChangesEnvironment=yes
 OutputDir=..\dist
 OutputBaseFilename=sessiontape-setup
 Compression=lzma2

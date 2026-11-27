@@ -8,8 +8,12 @@ on:
 
 jobs:
   test:
-    runs-on: macos-latest
-    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Code
@@ -25,16 +29,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Dependencies
-        run: |
-          uv venv
-          source .venv/bin/activate
-          uv pip install pytest
-
       - name: Run pytest
-        run: |
-          source .venv/bin/activate
-          uv run pytest tests/ -v
+        run: uv run --with pytest pytest tests/ -v
 
   build_release:
     needs: test
@@ -165,7 +161,7 @@ jobs:
       - name: Build and Package
         run: |
           .venv\Scripts\activate
-          powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
+          powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -RunTests
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: 1
 
